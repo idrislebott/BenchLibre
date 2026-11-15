@@ -10,7 +10,8 @@ extern "C" {
 #endif
 
 /* 8 independent four-lane FP32 FMA chains: 64 floating-point operations
- * per iteration (a multiply and an add are counted separately). */
+ * per iteration (a multiply and an add are counted separately).
+ * At most 4194304 iterations per call; an oversized call returns NaN/0. */
 typedef struct {
     double checksum;
     uint64_t operations;
@@ -21,7 +22,8 @@ int bl_cpu_validate(void);
 
 typedef struct BLMemoryContext BLMemoryContext;
 /* Three separately allocated, 64-byte-aligned arrays. Creation includes first
- * touch. Callers must release the context with bl_memory_destroy. */
+ * touch. At most 16777216 floats per array (192 MiB total).
+ * Callers must release the context with bl_memory_destroy. */
 BLMemoryContext *bl_memory_create(size_t float_count);
 void bl_memory_destroy(BLMemoryContext *context);
 void bl_memory_triad(BLMemoryContext *context);

@@ -19,6 +19,7 @@ final class RunnerRepeatTests: XCTestCase {
         let result = try XCTUnwrap(report.results.first)
         let conditions = try XCTUnwrap(report.conditions)
         XCTAssertEqual(report.formatVersion, 2)
+        XCTAssertEqual(report.totalSeconds, try XCTUnwrap(report.monotonicElapsedSeconds))
         XCTAssertEqual(trials.map(\.iteration), [1, 2, 3])
         XCTAssertEqual(Set(trials.map(\.kind)), [.cpu])
         XCTAssertEqual(summary.runCount, 3)
@@ -42,6 +43,24 @@ final class RunnerRepeatTests: XCTestCase {
         let decoded = try ReportCodec.decode(ReportCodec.encode(report))
         XCTAssertEqual(decoded.trials?.count, 3)
         XCTAssertEqual(decoded.results[0].value, summary.median)
+        XCTAssertEqual(decoded.totalSeconds, report.totalSeconds, accuracy: 1e-9)
+    }
+
+    func testKernelIntervalsAndLegacyWallTimingRemainExplicitlyAuditable() throws {
+        for source in ["monotonic-kernel-intervals", "monotonic-wall"] {
+            let latency = MetricResult(kind: .latency, value: 100, unit: "ns/accès", elapsedSeconds: 0.25,
+                samples: [100], checksum: 3, details: "Fixture", validated: true,
+                workAmount: 1_000_000, workUnit: "dependent-loads", timingSeconds: 0.1, timingSource: source)
+            try BenchmarkRunner.validateResult(latency, expected: .latency)
+            let memory = MetricResult(kind: .memory, value: 1, unit: "Go/s", elapsedSeconds: 0.25,
+                samples: [1], checksum: 3, details: "Fixture", validated: true,
+                workAmount: 100_000_000, workUnit: "logical-bytes", timingSeconds: 0.1, timingSource: source)
+            try BenchmarkRunner.validateResult(memory, expected: .memory)
+        }
+        let estimatedGPU = MetricResult(kind: .gpu, value: 2, unit: "GFLOP/s", elapsedSeconds: 0.1,
+            samples: [2], checksum: 1, details: "Fixture", validated: true,
+            workAmount: 200_000_000, workUnit: "FLOP", timingSeconds: 0.1, timingSource: "monotonic-wall")
+        XCTAssertThrowsError(try BenchmarkRunner.validateResult(estimatedGPU, expected: .gpu))
     }
 
     func testCancellationDuringSecondPassDoesNotReturnACompletedReport() {

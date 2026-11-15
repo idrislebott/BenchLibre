@@ -53,7 +53,7 @@ final class CPUMemoryTests: XCTestCase {
         XCTAssertTrue(result.validated)
         XCTAssertGreaterThan(work, 0)
         XCTAssertEqual(result.workUnit, "logical-bytes")
-        XCTAssertEqual(result.timingSource, "monotonic-wall")
+        XCTAssertEqual(result.timingSource, "monotonic-kernel-intervals")
         XCTAssertEqual(result.elapsedSeconds, measuredTime)
         XCTAssertEqual(result.value, work / measuredTime / 1_000_000_000, accuracy: 1e-12)
         XCTAssertEqual(work.truncatingRemainder(dividingBy: 192 * 1_024 * 1_024), 0)

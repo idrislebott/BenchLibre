@@ -114,7 +114,7 @@ public struct BenchmarkConfiguration: Codable, Sendable {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         secondsPerTest = try values.decode(Double.self, forKey: .secondsPerTest)
         threads = try values.decode(Int.self, forKey: .threads)
-        enabled = try values.decode([BenchmarkKind].self, forKey: .enabled)
+        enabled = try ReportLimits.array(BenchmarkKind.self, from: values, key: .enabled, limit: 6)
         repetitions = try values.decodeIfPresent(Int.self, forKey: .repetitions) ?? 1
     }
     public func validate() throws {
@@ -157,7 +157,8 @@ public struct BenchmarkReport: Codable, Identifiable, Sendable {
     public var summaries: [MeasurementSummary]? = nil
     public var conditions: [ConditionSample]? = nil
     public var omissions: [TestOmission]? = nil
-    public var totalSeconds: Double { endedAt.timeIntervalSince(startedAt) }
+    public var monotonicElapsedSeconds: Double? = nil
+    public var totalSeconds: Double { monotonicElapsedSeconds ?? endedAt.timeIntervalSince(startedAt) }
 }
 
 public struct BenchmarkTrial: Codable, Identifiable, Sendable {
@@ -173,4 +174,63 @@ public struct TestOmission: Codable, Sendable {
     public var kind: BenchmarkKind
     public var reason: String
     public var completedRuns: Int
+}
+
+
+extension MetricResult {
+    private enum CodingKeys: String, CodingKey {
+        case kind, value, unit, elapsedSeconds, samples, checksum, details, validated
+        case workAmount, workUnit, timingSeconds, timingSource
+    }
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        kind = try c.decode(BenchmarkKind.self, forKey: .kind)
+        value = try c.decode(Double.self, forKey: .value)
+        unit = try c.decode(String.self, forKey: .unit)
+        elapsedSeconds = try c.decode(Double.self, forKey: .elapsedSeconds)
+        samples = try ReportLimits.array(Double.self, from: c, key: .samples, limit: ReportLimits.samplesPerPass)
+        checksum = try c.decode(Double.self, forKey: .checksum)
+        details = try c.decode(String.self, forKey: .details)
+        validated = try c.decode(Bool.self, forKey: .validated)
+        workAmount = try c.decodeIfPresent(Double.self, forKey: .workAmount)
+        workUnit = try c.decodeIfPresent(String.self, forKey: .workUnit)
+        timingSeconds = try c.decodeIfPresent(Double.self, forKey: .timingSeconds)
+        timingSource = try c.decodeIfPresent(String.self, forKey: .timingSource)
+        try ReportLimits.string(details)
+        try ReportLimits.string(unit, maximum: 64)
+        if let workUnit { try ReportLimits.string(workUnit, maximum: 64) }
+        if let timingSource { try ReportLimits.string(timingSource, maximum: 128) }
+        guard value.isFinite, value > 0, elapsedSeconds.isFinite, elapsedSeconds > 0, checksum.isFinite,
+              !samples.isEmpty, samples.allSatisfy({ $0.isFinite && $0 > 0 }) else {
+            throw BenchmarkFailure.validationFailed("Mesure non finie, vide ou négative.")
+        }
+    }
+}
+
+extension BenchmarkReport {
+    private enum CodingKeys: String, CodingKey {
+        case id, formatVersion, workloadVersion, applicationVersion, startedAt, endedAt, hardware, configuration
+        case thermalBefore, thermalAfter, results, notes, trials, summaries, conditions, omissions, monotonicElapsedSeconds
+    }
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(UUID.self, forKey: .id)
+        monotonicElapsedSeconds = try c.decodeIfPresent(Double.self, forKey: .monotonicElapsedSeconds)
+        formatVersion = try c.decode(Int.self, forKey: .formatVersion)
+        workloadVersion = try c.decode(String.self, forKey: .workloadVersion)
+        applicationVersion = try c.decode(String.self, forKey: .applicationVersion)
+        startedAt = try c.decode(Date.self, forKey: .startedAt)
+        endedAt = try c.decode(Date.self, forKey: .endedAt)
+        hardware = try c.decode(HardwareSummary.self, forKey: .hardware)
+        configuration = try c.decode(BenchmarkConfiguration.self, forKey: .configuration)
+        thermalBefore = try c.decode(String.self, forKey: .thermalBefore)
+        thermalAfter = try c.decode(String.self, forKey: .thermalAfter)
+        results = try ReportLimits.array(MetricResult.self, from: c, key: .results, limit: 6)
+        notes = try ReportLimits.array(String.self, from: c, key: .notes, limit: 32)
+        trials = try ReportLimits.optionalArray(BenchmarkTrial.self, from: c, key: .trials, limit: 30)
+        summaries = try ReportLimits.optionalArray(MeasurementSummary.self, from: c, key: .summaries, limit: 6)
+        conditions = try ReportLimits.optionalArray(ConditionSample.self, from: c, key: .conditions, limit: ReportLimits.maximumConditions)
+        omissions = try ReportLimits.optionalArray(TestOmission.self, from: c, key: .omissions, limit: 6)
+        try ReportLimits.shape(self)
+    }
 }

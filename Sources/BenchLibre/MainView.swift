@@ -90,8 +90,8 @@ struct MainView: View {
             }
             Spacer()
             if model.current != nil {
-                Button { model.exportReport() } label: { Label("Exporter JSON", systemImage: "square.and.arrow.up") }
-                    .controlSize(.regular).padding(.top, 19)
+                Button { model.exportReport() } label: { Label("Copie JSON", systemImage: "square.and.arrow.up") }
+                    .controlSize(.regular).disabled(model.exporting || model.running).help("Enregistre une copie dans le conteneur de l’application et la révèle dans Finder.").padding(.top, 19)
             } else {
                 Text("100 % LOCAL").font(.system(size: 9, weight: .semibold)).tracking(0.6)
                     .foregroundStyle(muted).padding(.horizontal, 11).padding(.vertical, 7)
@@ -106,7 +106,7 @@ struct MainView: View {
                 HStack {
                     VStack(alignment: .leading, spacing: 5) {
                         Text("Session de mesure").font(.system(size: 15, weight: .semibold))
-                        Text("\(model.durations[model.preset].formatted()) s par passage · \(model.enabled.count) tests sélectionnés")
+                        Text("\(model.durations[model.preset].formatted()) s par passage · \(model.enabled.count) test(s) sélectionné(s)")
                             .font(.system(size: 11)).foregroundStyle(muted)
                     }
                     Spacer()
@@ -160,7 +160,7 @@ struct MainView: View {
                     } else {
                         Button { model.start() } label: { Label("Mesurer le Mac", systemImage: "play.fill").fontWeight(.semibold).padding(.horizontal, 6) }
                             .buttonStyle(.borderedProminent).controlSize(.large).tint(accent).foregroundStyle(ink)
-                            .disabled(model.enabled.isEmpty).keyboardShortcut(.defaultAction)
+                            .disabled(model.enabled.isEmpty || model.exporting || model.loadingHistory).keyboardShortcut(.defaultAction)
                     }
                 }
             }.padding(22).background(panel, in: RoundedRectangle(cornerRadius: 16))
@@ -220,7 +220,7 @@ struct MainView: View {
             if model.showDetails, let result {
                 Text(result.details).font(.system(size: 9, design: .monospaced)).foregroundStyle(muted).lineLimit(3)
             }
-        }.padding(19).frame(maxWidth: .infinity, alignment: .leading)
+        }.padding(19).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             .background(panel, in: RoundedRectangle(cornerRadius: 15))
             .overlay(RoundedRectangle(cornerRadius: 15).stroke(active ? accent.opacity(0.5) : .white.opacity(0.07), lineWidth: 1))
     }
@@ -365,14 +365,13 @@ struct MainView: View {
 private struct Sparkline: Shape {
     var values: [Double]
     func path(in rect: CGRect) -> Path {
-        let clean = values.filter { $0.isFinite }
-        guard clean.count > 1, let lo = clean.min(), let hi = clean.max() else { return Path() }
-        let spread = max(hi - lo, max(abs(hi) * 0.12, 0.001))
-        let lower = (lo + hi - spread) * 0.5
+        let clean = ChartSeries.normalized(values)
+        guard clean.count > 1, rect.minX.isFinite, rect.minY.isFinite,
+              rect.width.isFinite, rect.height.isFinite else { return Path() }
         return Path { path in
             for (index, value) in clean.enumerated() {
                 let x = rect.minX + Double(index) / Double(clean.count - 1) * rect.width
-                let y = rect.maxY - (0.12 + 0.76 * (value - lower) / spread) * rect.height
+                let y = rect.maxY - value * rect.height
                 let point = CGPoint(x: x, y: y)
                 if index == 0 { path.move(to: point) } else { path.addLine(to: point) }
             }

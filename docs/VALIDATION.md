@@ -1,35 +1,29 @@
 # Vérifications effectuées
 
-## Version 0.2.0
+## Version 0.3.0 — validation actuelle
 
-Sur le même Apple M2, macOS 27.2.1, Swift 6.4.2 et Xcode 27.2, la suite Release complète a exécuté **41 tests avec zéro échec** : CPU/mémoire (6), E/S fichier (4), GPU Metal (3), latence mémoire (5), rapports (3), cohérence et compatibilité des rapports (10), passages répétés du runner (2), statistiques et conditions (8).
+Le 16 novembre 2026, sur Apple M2 et macOS 27.2.1 :
 
-Les tests d’E/S utilisent de petits fichiers et vérifient les octets transférés, le recalcul des débits, l’annulation et la conservation d’un fichier témoin extérieur au test. Le noyau C de latence a aussi été vérifié isolément avec AddressSanitizer et UndefinedBehaviorSanitizer ; son assembleur optimisé conserve les lectures dépendantes.
+- 66 tests Release réussis, zéro échec, aucun test ignoré.
+- 66 tests réussis avec AddressSanitizer, dont le test Metal réel.
+- Harnais des noyaux C avec AddressSanitizer et UndefinedBehaviorSanitizer : 64 cycles de création/calcul/validation/destruction, aucun diagnostic.
+- Assemblage native Xcode Release, signature ad hoc avec App Sandbox et Hardened Runtime.
+- Vérification stricte de signature et de ressources, diagnostic positif du confinement ; un droit réseau ajouté à une copie de test provoque un refus de démarrage.
+- Six moteurs réellement exécutés en validation courte, six résultats validés sans omission, export JSON dans le conteneur.
+- Chemin d'export externe refusé avant mesure ; tests des symlinks, hardlinks, FIFO, tailles JSON, tableaux excessifs et graphiques extrêmes.
+- Durée de session monotone conservée et vérifiée, y compris après un recul simulé de l'horloge civile.
+- Boucles CPU vectorielles et lectures dépendantes toujours présentes dans l'assembleur optimisé.
 
-Une exécution Release courte des six moteurs a réellement produit six résultats validés, avec données brutes, résumés et conditions. Le plafond d’écriture a été respecté. Une autre session a exécuté trois passages sur chacun des quatre tests sélectionnés par défaut ; les médianes et les formules travail/temps ont été recalculées indépendamment à partir du JSON. Les arguments CLI invalides ont été rejetés avant les mesures.
+Le harnais C source est conservé dans Tests/NativeSafety/KernelSafetyHarness.c. Les tests Swift sont dans Tests/BenchCoreTests. Les journaux complets sont conservés dans le dossier de travail de cette session.
 
-Dans l’application installée, une session de latence de **trois passages de 2,5 secondes** a été réalisée. La médiane, l’intervalle min–max, le coefficient de variation et les échantillons du passage médian ont été affichés. Le journal contenait dix observations initiale, périodiques et finale. L’historique a affiché le rapport court des six moteurs et les anciens rapports v0.1, interprétés comme un passage.
+La cible universelle compile pour arm64 et x86_64 ; seules les exécutions arm64 ont été testées ici. Les durées courtes servent à vérifier le fonctionnement, sans établir une référence de performance. Les versions instrumentées ne sont pas des mesures de référence.
 
-L’export JSON a réussi depuis l’interface, puis la fenêtre principale a repris le focus. Sur ce système, un dossier restauré par le panneau d’export pouvait laisser le bouton d’enregistrement grisé ; une sélection explicite du dossier avec ⌘⇧G a permis l’enregistrement local.
+Le contrôle visuel de l'ancienne instance via l'interface macOS n'a pas permis de terminer le remplacement et l'essai visuel de la version 0.3. La version 0.2 est conservée. La version corrigée est livrée séparément ; il faut quitter l'ancienne instance avant de l'ouvrir.
 
-Ces passages servent à vérifier le fonctionnement ; ils n’établissent pas une référence de performances ni une validation entre différents modèles de Mac. Les contrôles du format 2 vérifient la cohérence interne des données, sans certifier l’authenticité matérielle d’une exécution. Les autres modèles de Mac, macOS 14 et les Mac Intel restent non testés en exécution ici.
+Le rapport [SECURITY-AUDIT.md](SECURITY-AUDIT.md) décrit les corrections, les limites de l'audit, les dépendances et la distribution encore sans notarisation. Il ne faut pas assimiler une signature locale valide à une certification antivirus ou à une authentification matérielle des résultats.
 
-## Version 0.1 — historique
+## Vérifications historiques — versions 0.2 et 0.1
 
-Ces vérifications concernent la version locale de BenchLibre sur la machine suivante :
+La version 0.2 avait passé 41 tests Release sur cette machine. Les six moteurs, les répétitions, l'historique et l'export via l'ancien panneau avaient été utilisés. La version 0.1 avait passé 12 tests et une session visuelle CPU/GPU/mémoire.
 
-- Puce : Apple M2.
-- Système : macOS 27.2.1.
-- Compilation : Swift 6.4.2 et Xcode 27.2.
-
-La commande `swift test -c release` a exécuté 12 tests, avec zéro échec : 6 tests CPU/mémoire, 3 tests GPU et 3 tests de rapports. La validation du résultat GPU contre la référence CPU a réellement été exécutée sur le GPU de cette machine.
-
-Une revue du code en lecture seule n’a relevé aucun problème critique dans le comptage des opérations et des octets, les dénominateurs temporels ou la gestion de l’annulation. Cette revue ne constitue pas une certification des performances.
-
-L’application Release installée a également été vérifiée avec une session de 2,5 secondes par test CPU, GPU Metal et mémoire. Les trois résultats ont réussi leurs contrôles numériques. L’annulation n’a pas créé de rapport ; l’historique a conservé une session après redémarrage. Le menu « Données pour les nerds » et l’export JSON vers un dossier local ont été utilisés dans l’interface. Les débits exportés ont été recalculés à partir du travail et du dénominateur enregistrés.
-
-Le chargement des ressources Metal de l’application autonome a réussi avec le bundle de ressources de compilation temporairement déplacé. La signature locale du paquet installé a été vérifiée. Le dossier iCloud des livrables a été signalé comme indisponible à l’écriture par le panneau d’export natif pendant une vérification ; un export local a fonctionné.
-
-Les exécutions automatisées courtes servent à vérifier le fonctionnement et la cohérence des calculs. Elles ne constituent pas des résultats de performance de référence.
-
-Les autres modèles de Mac, macOS 14 et les Mac Intel n’ont pas été testés ici.
+Ces résultats historiques concernent les anciens binaires, avant le confinement et les corrections de chronométrage de la version 0.3. Ils ne valident ni la sécurité actuelle, ni la comparabilité entre les suites v2 et v3. Les anciennes archives et les rapports de validation sont conservés en dehors du projet courant.

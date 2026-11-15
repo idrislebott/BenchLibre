@@ -1,16 +1,21 @@
 // SPDX-License-Identifier: MIT
-// FP32-FMA-v1: four independent float4 FMAs per loop iteration.
+// FP32-FMA-v2: four independent float4 FMAs per loop iteration.
 // That is 16 scalar FMAs, or exactly 32 counted FLOPs, per thread/iteration.
 // Seed setup and the final reduction are deliberately excluded from the count.
 #include <metal_stdlib>
 using namespace metal;
 
-kernel void fp32_fma_v1(
+kernel void fp32_fma_v2(
     device const float4 *seeds [[buffer(0)]],
     device float4 *output [[buffer(1)]],
     constant uint &iterations [[buffer(2)]],
+    constant uint &elementCount [[buffer(3)]],
+    constant uint &outputOffset [[buffer(4)]],
+    constant uint &outputCapacity [[buffer(5)]],
     uint index [[thread_position_in_grid]])
 {
+    if (index >= elementCount || outputOffset >= outputCapacity ||
+        index >= outputCapacity - outputOffset) return;
     float4 a = seeds[index];
     float4 b = a + float4(0.25f, 0.5f, 0.75f, 1.0f);
     float4 c = a + float4(1.0f, 0.75f, 0.5f, 0.25f);
@@ -21,5 +26,5 @@ kernel void fp32_fma_v1(
         c = fma(c, float4(0.99943f, 0.99937f, 0.99929f, 0.99923f), float4(0.00047f, 0.00053f, 0.00059f, 0.00061f));
         d = fma(d, float4(0.99919f, 0.99913f, 0.99907f, 0.99901f), float4(0.00067f, 0.00071f, 0.00073f, 0.00079f));
     }
-    output[index] = ((a + b) + c) + d;
+    output[outputOffset + index] = ((a + b) + c) + d;
 }

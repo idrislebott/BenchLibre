@@ -4,7 +4,7 @@
 
 Le rapport JSON conserve la version de format, la version de charge (`workloadVersion`), la version de l'application, les dates de début et de fin et les paramètres. Il décrit aussi le modèle, la puce, le GPU, la mémoire, les cœurs logiques, l'architecture, macOS et l'alimentation.
 
-La version d’application **0.2.0** utilise le **format 2** et la charge **`benchlibre-suite-v2`**. `results` contient un résultat représentatif par test terminé, `trials` les passages complets bruts, `summaries` leur synthèse, `conditions` les observations du Mac et `omissions` les tests indisponibles avec leur raison. Les passages complets précédant l’indisponibilité d’un test restent dans `trials` ; ce test incomplet ne reçoit pas de résultat médian ni de synthèse complète.
+La version d’application **0.3.0** utilise le **format 2** et la charge **`benchlibre-suite-v3`**. `results` contient un résultat représentatif par test terminé, `trials` les passages complets bruts, `summaries` leur synthèse, `conditions` les observations du Mac et `omissions` les tests indisponibles avec leur raison. Les passages complets précédant l’indisponibilité d’un test restent dans `trials` ; ce test incomplet ne reçoit pas de résultat médian ni de synthèse complète.
 
 Le format 1 reste pris en charge. Ses nouveaux champs absents restent absents ; un nombre de passages non enregistré est interprété comme 1. Une migration de lecture ne crée pas rétrospectivement des observations ou des répétitions.
 
@@ -12,13 +12,15 @@ Comparer seulement des passages utilisant la **même version de charge**, les m�
 
 ## Chronométrage et débit
 
-Les moteurs utilisent une horloge monotone pour délimiter le passage. La préparation des ressources, la compilation des shaders, la calibration, l’échauffement et les validations hors chronométrage sont exclus de la mesure rapportée. Pour CPU, mémoire et latence, `elapsedSeconds` décrit la fenêtre murale de la boucle mesurée. Pour le GPU, le débit utilise les horodatages GPU cumulés : `timingSeconds` peut donc différer de la fenêtre murale. Pour les E/S fichier, `elapsedSeconds` et `timingSeconds` désignent la somme des fenêtres chronométrées, en excluant les validations intercalées. Les détails de chaque résultat précisent le périmètre utilisé.
+Les moteurs utilisent une horloge monotone pour délimiter le passage. La préparation des ressources, la compilation des shaders, la calibration, l’échauffement et les validations hors chronométrage sont exclus de la mesure rapportée. Pour le CPU, `elapsedSeconds` va du démarrage des workers au dernier lot réellement achevé : une attente ultérieure du coordinateur ne prolonge pas le dénominateur. Pour la mémoire et la latence, `elapsedSeconds` et `timingSeconds` sont la somme des intervalles entourant les appels au noyau C, appels inclus ; les callbacks et le contrôle entre ces appels sont exclus (`monotonic-kernel-intervals`). Pour le GPU, le débit utilise les horodatages GPU cumulés : `timingSeconds` peut donc différer de la fenêtre murale. Pour les E/S fichier, `elapsedSeconds` et `timingSeconds` désignent la somme des fenêtres chronométrées, en excluant les validations intercalées. Les détails de chaque résultat précisent le périmètre utilisé.
 
 Chaque résultat conserve `workAmount`, `workUnit`, `timingSeconds` et `timingSource`. Les débits se recalculent par travail / temps / 10⁹ ; la latence se recalcule par temps / accès × 10⁹. Les bornes `startedAtSeconds` et `endedAtSeconds` de chaque `trial` utilisent l’époque monotone du journal des conditions et couvrent l’invocation complète du moteur, préparation et validation incluses.
 
 Le débit d'ensemble se calcule à partir du travail total et du temps total correspondant. Une moyenne non pondérée d'échantillons de durées différentes ne représente pas ce même débit. Les échantillons servent à observer la variabilité de la charge pendant le passage.
 
-Les durées de mesure des profils sont de **2,5**, **10** et **30 secondes par passage et par test**. La durée réelle peut dépasser légèrement la cible pour terminer un lot déjà engagé. Les E/S peuvent finir plus tôt lorsqu’elles atteignent leur budget d’octets. La durée totale de session inclut la préparation et les changements de phase.
+Les durées de mesure des profils sont de **2,5**, **10** et **30 secondes par passage et par test**. La durée réelle peut dépasser légèrement la cible pour terminer un lot déjà engagé. Les E/S peuvent finir plus tôt lorsqu’elles atteignent leur budget d’octets. La durée totale de session inclut la préparation et les changements de phase. Le champ optionnel `monotonicElapsedSeconds` conserve cette durée indépendamment d’une correction de l’horloge civile ; les dates restent utiles pour situer la session.
+
+Les mises à jour de progression du runner sont regroupées sur une file asynchrone bornée. Le runner attend la fin des callbacks aux limites de phase, hors fenêtre mesurée ; un travail que le callback programme lui-même de façon asynchrone, notamment sur l’interface, reste indépendant. Le moniteur de conditions sépare les requêtes publiques IOKit potentiellement lentes de son verrou de lecture rapide. Ces mesures réduisent le biais des observateurs ; leur activité concurrente et celle de l’interface peuvent toujours disputer des ressources matérielles.
 
 ## Répétitions et statistiques
 
@@ -30,36 +32,40 @@ La synthèse conserve le nombre de passages, la médiane, le minimum, le maximum
 
 ## CPU — calcul FP32 multicœur
 
-La charge utilise **8 chaînes indépendantes de 4 voies FP32 par worker**. Les workers demandés exécutent le même noyau ; leur nombre est conservé dans la configuration. Le nombre d’itérations par lot est calibré avant la mesure pour permettre une interruption rapide.
+La charge **CPU-FP32-v2** utilise **8 chaînes indépendantes de 4 voies FP32 par worker**. Les workers demandés exécutent le même noyau ; leur nombre est conservé dans la configuration. Le nombre d’itérations par lot est calibré avant la mesure pour permettre une interruption rapide.
 
 - **GFLOP/s** = opérations flottantes comptées / secondes chronométrées / 10⁹.
 - Une multiplication-addition fusionnée, `a × b + c`, compte pour **deux** opérations flottantes.
 - Chaque itération exécute 8 × 4 FMA, soit **64 opérations flottantes**.
-- Le débit est la somme des opérations de tous les workers divisée par le temps monotone écoulé.
+- Le débit est la somme des opérations de tous les workers divisée par le temps monotone du démarrage au dernier lot réellement achevé. Le timestamp de fin est capturé par chaque worker avant le verrou d’accumulation ; les retards ultérieurs du coordinateur sont exclus.
 - Une référence scalaire vérifie les 32 voies sur un petit lot ; le checksum des lots mesurés est consommé et doit rester fini.
-- Les sorties sont consommées et contrôlées pour empêcher l'élimination du calcul comme travail inutilisé.
+- Les sorties mesurées et d’échauffement sont consommées et contrôlées. Les FMA explicites, les règles d’arrondi strictes et les fonctions C non inline conservent une dépendance réelle aux résultats en Release.
+
+Les workers utilisent GCD avec la QoS `userInitiated`, hors du thread principal. macOS décide de leur placement sur les cœurs Performance et Efficacité ; le protocole ne force pas une affinité ni une occupation de 100 %.
 
 Le résultat représente le noyau FP32 de BenchLibre. Il dépend notamment du compilateur, de la vectorisation, des fréquences, du nombre de workers et de la répartition de la charge entre les cœurs.
 
 ## GPU — calcul Metal FP32
 
-Le noyau Metal utilise des entrées dépendantes de l'exécution et écrit des résultats lus pour validation. La préparation des buffers et la création du pipeline ne font pas partie du débit de calcul.
+Le noyau **FP32-FMA-v2** utilise des entrées déterministes et écrit des résultats lus pour validation. Chaque dispatch d’une même commande possède une tranche de sortie distincte ; les dispatchs ne réécrivent donc pas simplement la même sortie. Les tampons de sortie sont bornés à **32 Mio**. La préparation des buffers et la création du pipeline ne font pas partie du débit de calcul.
 
-Le temps GPU provient des horodatages du `MTLCommandBuffer` terminé. Des horodatages absents, non finis ou non positifs doivent rendre la mesure indisponible plutôt que produire un débit inventé. Un temps de soumission mesuré sur le CPU n'est pas interchangeable avec un temps d'exécution GPU.
+Le temps GPU provient des horodatages du `MTLCommandBuffer` terminé. Des horodatages absents, non finis, non positifs, désordonnés ou incompatibles avec la durée aller-retour monotone de la commande rendent la mesure indisponible plutôt que produire un débit inventé. Un temps de soumission mesuré sur le CPU n'est pas interchangeable avec un temps d'exécution GPU.
 
 Chaque dispatch mesuré exécute **32 768 threads × 512 itérations × 16 FMA × 2 opérations**, soit **536 870 912 FLOP**. Ces dimensions restent fixes entre les Mac. La calibration change seulement le nombre de dispatchs regroupés dans une commande.
 
-Le débit est la somme des FLOP comptés divisée par la somme des durées GPU correspondantes. L'initialisation et la réduction du résultat ne sont pas ajoutées au compte de FLOP, bien qu'elles appartiennent au noyau chronométré. Une référence CPU contrôle **7 positions × 4 composantes**, soit 28 composantes, avant et après la mesure ; ce contrôle est échantillonné, pas exhaustif sur toutes les sorties. Le champ `details` rappelle les dimensions de la charge et le périmètre du chronométrage.
+Le débit est la somme des FLOP comptés divisée par la somme des durées GPU correspondantes. L’initialisation, les gardes de bornes et la réduction du résultat ne sont pas ajoutées au compte de FLOP, bien qu’elles appartiennent au noyau chronométré. Après chaque commande mesurée, le CPU consomme une sortie SIMD de chaque tranche. Toutes les composantes des sorties finales actives sont contrôlées comme finies et ajoutées au checksum. Une référence CPU contrôle **7 positions × 4 composantes par tranche**, soit 28 composantes par tranche ; cette comparaison numérique est échantillonnée, tandis que le contrôle de finitude couvre toutes les sorties finales actives. Les lectures CPU et validations n’entrent pas dans le dénominateur GPU. Le champ `details` rappelle les dimensions de la charge et le périmètre du chronométrage.
+
+La source Metal est lue uniquement dans le bundle propre à l’application, avec ouvertures sans suivi des liens symboliques, fichier régulier et taille maximale de 16 Kio. Son SHA-256 attendu est `a7dfa6d8eb168939869b17df232fe4b3733efdadb87a04d1dbf1381023ac5041`, vérifié par CryptoKit avant compilation. Il faut mettre à jour ce manifeste et la version de charge lorsqu’on change le shader. La compilation utilise les modes mathématiques sûrs/précis disponibles sur la version de macOS, sans fast-math.
 
 Ce test ne rend pas une scène de jeu. Il n'évalue pas la synchronisation verticale, les FPS d'affichage, les textures, le ray tracing, les interpolations d'images ou la performance d'une application réelle.
 
 ## Mémoire — bande passante logique
 
 - **Go/s** utilise des gigaoctets décimaux : **1 Go = 10⁹ octets**.
-- Le noyau est une triade **mono-thread** : `A[i] = B[i] + 3 × C[i]`.
+- Le noyau **Triad-v2** est une triade **mono-thread** : `A[i] = B[i] + 3 × C[i]`.
 - Trois tableaux de **64 Mio** représentent un ensemble de travail de **192 Mio**.
 - Chaque élément traite deux lectures FP32 et une écriture FP32 : **12 octets logiques**. Un passage complet compte **192 Mio**, soit 201 326 592 octets logiques.
-- Le débit est le total de ces octets logiques divisé par le temps monotone écoulé.
+- Le débit est le total de ces octets logiques divisé par la somme des fenêtres monotones des appels au noyau C. Les callbacks, l’attente et le contrôle intercalés entre ces appels ne prolongent pas ces fenêtres.
 - Le résultat complet est vérifié, avec un checksum de référence ; cette validation, l’allocation et le premier accès sont exclus de la fenêtre mesurée.
 - Le champ `details` précise le nombre de passages réalisés.
 - Les buffers sont dimensionnés pour dépasser les petits caches ; leur trafic passe toutefois toujours par la hiérarchie mémoire de la machine.
@@ -68,9 +74,9 @@ Ce chiffre n'est pas une lecture du compteur de trafic DRAM. Les caches, la coh�
 
 ## Mémoire — latence des accès dépendants
 
-La charge **Pointer-chase-v1** utilise un cycle aléatoire déterministe de **1 048 576 indices UInt32** dans un ensemble de travail de **64 Mio**. Chaque nœud occupe un emplacement espacé de **64 octets**, avec la graine `0x4c4154454e435931`. Cet espacement fait partie du protocole et n’est pas une hypothèse sur la taille réelle des lignes de cache de la machine.
+La charge **Pointer-chase-v2** utilise un cycle aléatoire déterministe de **1 048 576 indices UInt32** dans un ensemble de travail de **64 Mio**. Chaque nœud occupe un emplacement espacé de **64 octets**, avec la graine `0x4c4154454e435931`. Cet espacement fait partie du protocole et n’est pas une hypothèse sur la taille réelle des lignes de cache de la machine.
 
-Chaque lecture dépend de l’index obtenu par la précédente. Le noyau consomme l’index final et compte les accès effectivement exécutés. Le résultat est **ns/accès = secondes mesurées / accès dépendants × 10⁹** ; une valeur plus basse est meilleure. La boucle murale inclut les appels au noyau et le contrôle des lots. Le nombre d’accès par lot est calibré et borné ; la taille de l’ensemble de travail reste fixe.
+Chaque lecture dépend de l’index obtenu par la précédente. Le noyau consomme l’index final et compte les accès effectivement exécutés. Le résultat est **ns/accès = secondes mesurées / accès dépendants × 10⁹** ; une valeur plus basse est meilleure. La durée est la somme des fenêtres monotones entourant les appels au noyau C, appels inclus ; les callbacks et le contrôle des lots entre les appels sont exclus. Le nombre d’accès par lot est calibré et borné à 65 536 dans le moteur ; la taille de l’ensemble de travail reste fixe.
 
 L’allocation, la création du cycle, une traversée complète d’échauffement, la calibration et les validations sont exclues de la fenêtre mesurée. Le cycle complet est contrôlé et l’index final est comparé à une traversée scalaire de référence. Le nombre d’accès, la durée et l’index final restent dans le rapport.
 
@@ -78,7 +84,7 @@ Ce test mesure la latence effective de cette charge à travers la hiérarchie m�
 
 ## Stockage — E/S séquentielles de fichier
 
-Les tests **`disk-read`** et **`disk-write`** utilisent chacun un fichier propre de **64 Mio**, dans un dossier temporaire unique du volume choisi par macOS pour ses fichiers temporaires. Ils ne ciblent pas directement un périphérique brut et ne permettent pas de sélectionner un disque externe dans cette version. Le fichier et son dossier sont supprimés à la fin, y compris après annulation ou erreur ; aucun autre fichier n’est utilisé.
+Les tests **`disk-read`** et **`disk-write`** utilisent chacun un fichier propre de **64 Mio**, dans un dossier privé unique sous `Temporary`, à l’intérieur du conteneur de l’application. Ils ne ciblent pas directement un périphérique brut et ne permettent pas de sélectionner un disque externe dans cette version. Le fichier et son dossier sont supprimés à la fin, y compris après annulation ou erreur ; aucun autre fichier n’est utilisé.
 
 Les transferts s’effectuent par blocs de **1 Mio**, avec gestion des appels partiels et interruptions. Des données pseudo-aléatoires déterministes sont préparées hors chronométrage. Chaque invocation écrit initialement **64 Mio**, effectue un `fsync`, relit et vérifie le fichier avant la mesure. Cette préparation est exclue des débits.
 
@@ -87,13 +93,15 @@ Le descripteur utilise **`F_NOCACHE`**. Si ce réglage échoue, le test est sign
 - **Lecture :** chaque fenêtre chronomètre le repositionnement et la lecture complète du fichier. Tous les octets sont comparés au tampon de référence après la fenêtre ; cette validation et le checksum sont exclus du temps d’E/S. Le budget de lectures mesurées est **64 Gio par invocation**.
 - **Écriture :** chaque fenêtre chronomètre le repositionnement, la réécriture complète et le `fsync` associé. Le budget d’écritures mesurées est **512 Mio par invocation**, en plus des 64 Mio de préparation. Le contenu final est relu et vérifié hors chronométrage.
 
-La mesure s’arrête à la durée cible ou au budget d’octets, après un fichier complet. Le rapport précise la raison de terminaison. Les limites s’appliquent à chaque passage : plusieurs répétitions multiplient les E/S. Le débit est **Go/s = octets logiques transférés / somme des fenêtres mesurées / 10⁹**. Les progressions et contrôles de boucle à l’intérieur des fenêtres appartiennent au coût mesuré ; les intervalles de validation intercalés n’y appartiennent pas.
+La mesure s’arrête à la durée cible ou au budget d’octets, après un fichier complet. Le rapport précise la raison de terminaison. Les limites s’appliquent à chaque passage : plusieurs répétitions multiplient les E/S. Le débit est **Go/s = octets logiques transférés / somme des fenêtres mesurées / 10⁹**. Les contrôles d’annulation et la gestion des transferts partiels à l’intérieur des fenêtres appartiennent au coût mesuré ; les callbacks de progression et intervalles de validation intercalés n’y appartiennent pas.
 
-Ces résultats décrivent les E/S de cette charge sur le volume temporaire. Ils ne sont pas une mesure isolant le bus SSD, son débit constructeur ou le trafic physique exact du support.
+Ces résultats décrivent les E/S de cette charge sur le volume du conteneur. Ils ne sont pas une mesure isolant le bus SSD, son débit constructeur ou le trafic physique exact du support.
 
 ## Vérification numérique
 
 Les moteurs effectuent des contrôles de cohérence et exposent un checksum. Les débits et latences doivent être finis et strictement positifs. Un calcul qui échoue à sa validation interrompt la session, sans créer de rapport complet validé.
+
+Les rapports sont bornés à 8 Mio, 6 résultats, 30 passages, 4 096 échantillons par passage et 10 000 observations de conditions ; les chaînes et dates sont aussi bornées. Les résumés sont recalculés à la lecture et le représentant doit correspondre à un passage médian réel. Ces contrôles vérifient une cohérence locale et ne sont pas une signature anti-triche.
 
 Une session annulée ne doit pas être présentée comme un passage complet validé. De même, un GPU absent ou une fonctionnalité indisponible doit être distingué d'un résultat faible.
 

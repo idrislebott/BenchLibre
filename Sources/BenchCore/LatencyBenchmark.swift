@@ -77,36 +77,37 @@ public enum LatencyBenchmark {
         var index: UInt32 = 0
         var loads: UInt64 = 0
         var samples: [Double] = []
-        let started = now()
-        let deadline = started + UInt64(duration * 1_000_000_000)
-        var sampleStarted = started
+        var measuredSeconds = 0.0
+        var sampleSeconds = 0.0
         var sampleLoads: UInt64 = 0
-        while now() < deadline {
+        while measuredSeconds < duration {
             try cancellation.check()
+            let kernelStart = now()
             let measured = bl_latency_chase(context, index, chunk)
-            guard measured.valid == 1, measured.loads == chunk else {
+            let kernelSeconds = seconds(kernelStart, now())
+            guard measured.valid == 1, measured.loads == chunk, kernelSeconds > 0 else {
                 throw BenchmarkFailure.validationFailed("Un lot d’accès dépendants est invalide.")
             }
             index = measured.final_index
             loads += measured.loads
-            let current = now()
-            let interval = seconds(sampleStarted, current)
+            measuredSeconds += kernelSeconds
+            sampleSeconds += kernelSeconds
+            let interval = sampleSeconds
             if interval >= 0.1 {
                 let sample = interval / Double(loads - sampleLoads) * 1_000_000_000
                 samples.append(sample)
-                sampleStarted = current; sampleLoads = loads
-                let elapsed = seconds(started, current)
+                sampleSeconds = 0; sampleLoads = loads
+                let elapsed = measuredSeconds
                 progress(EngineUpdate(fraction: min(0.999, elapsed / duration),
                                      value: elapsed / Double(loads) * 1_000_000_000,
                                      message: "Accès mémoire dépendants · \(bytes / 1_048_576) Mio…"))
             }
         }
-        let ended = now()
         try cancellation.check()
-        let elapsed = seconds(started, ended)
+        let elapsed = measuredSeconds
         let value = elapsed / Double(loads) * 1_000_000_000
-        if loads > sampleLoads, seconds(sampleStarted, ended) >= 0.05 {
-            samples.append(seconds(sampleStarted, ended) / Double(loads - sampleLoads) * 1_000_000_000)
+        if loads > sampleLoads, sampleSeconds >= 0.05 {
+            samples.append(sampleSeconds / Double(loads - sampleLoads) * 1_000_000_000)
         }
         if samples.isEmpty { samples = [value] }
 
@@ -125,9 +126,9 @@ public enum LatencyBenchmark {
         progress(EngineUpdate(fraction: 1, value: value, message: "Latence des accès dépendants validée."))
         return MetricResult(kind: .latency, value: value, unit: "ns/accès", elapsedSeconds: elapsed,
                             samples: samples, checksum: Double(index),
-                            details: "Pointer-chase-v1 : cycle déterministe de \(nodeCount) indices UInt32 dans \(bytes) octets (\(bytes / 1_048_576) Mio), nœuds espacés de 64 octets, graine 0x4c4154454e435931. \(loads) lectures dépendantes ; lots de \(chunk) accès. Temps mural de la boucle / nombre d’accès, appels et contrôle de boucle inclus ; allocation, préparation, échauffement, calibration et validation exclus. Cycle complet et index final vérifiés. Latence effective de cette charge à travers la hiérarchie de caches, sans garantie de latence physique DRAM. Une valeur plus basse est meilleure.",
+                            details: "Pointer-chase-v2 : cycle déterministe de \(nodeCount) indices UInt32 dans \(bytes) octets (\(bytes / 1_048_576) Mio), nœuds espacés de 64 octets, graine 0x4c4154454e435931. \(loads) lectures dépendantes ; lots de \(chunk) accès. Somme des fenêtres monotones du noyau C / nombre d’accès ; appels inclus, callbacks et contrôle Swift exclus ; allocation, préparation, échauffement, calibration et validation exclus. Cycle complet et index final vérifiés. Latence effective de cette charge à travers la hiérarchie de caches, sans garantie de latence physique DRAM. Une valeur plus basse est meilleure.",
                             validated: true, workAmount: Double(loads), workUnit: "dependent-loads",
-                            timingSeconds: elapsed, timingSource: "monotonic-wall")
+                            timingSeconds: elapsed, timingSource: "monotonic-kernel-intervals")
     }
 
     private static func now() -> UInt64 { DispatchTime.now().uptimeNanoseconds }

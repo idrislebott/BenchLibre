@@ -1,12 +1,13 @@
 import SwiftUI
 import AppKit
-import UniformTypeIdentifiers
 import BenchCore
 
 @MainActor
 final class AppModel: ObservableObject {
     @Published var hardware = SystemInfo.capture()
-    @Published var reports = ReportStore.load()
+    @Published var reports: [BenchmarkReport] = []
+    @Published var exporting = false
+    @Published var loadingHistory = true
     @Published var current: BenchmarkReport?
     @Published var results: [BenchmarkKind: MetricResult] = [:]
     @Published var summaries: [BenchmarkKind: MeasurementSummary] = [:]
@@ -35,8 +36,18 @@ final class AppModel: ObservableObject {
     private var currentRunID: UUID?
     let durations = [2.5, 10.0, 30.0]
 
+    init() {
+        Task { [weak self] in
+            let loaded = await Task.detached(priority: .utility) { ReportStore.load() }.value
+            guard let self else { return }
+            self.loadingHistory = false
+            guard !self.running, self.current == nil else { return }
+            self.reports = loaded
+        }
+    }
+
     func start() {
-        guard !running, !enabled.isEmpty else { return }
+        guard !running, !exporting, !loadingHistory, !enabled.isEmpty else { return }
         let config = BenchmarkConfiguration(secondsPerTest: durations[preset], threads: threads,
                                             enabled: BenchmarkKind.allCases.filter { enabled.contains($0) }, repetitions: repetitions)
         let cancellation = CancellationToken()
@@ -71,23 +82,36 @@ final class AppModel: ObservableObject {
     }
 
     func stop() {
-        guard running else { return }
+        guard running, !stopping else { return }
         stopping = true; status = "Arrêt du test…"; token?.cancel()
     }
 
-    private func finish(_ report: BenchmarkReport) {
+    private func finish(_ report: BenchmarkReport) async {
+        stopping = true; token = nil; status = "Enregistrement du rapport…"
+        do {
+            let loaded = try await Task.detached(priority: .utility) {
+                try ReportStore.save(report)
+                return ReportStore.load()
+            }.value
+            reports = loaded
+            status = "Session terminée · rapport enregistré dans le conteneur."
+        } catch {
+            status = "Mesure terminée · rapport conservé dans cette fenêtre."
+            self.error = "Le rapport n’a pas pu être enregistré : \(error.localizedDescription)"
+        }
         currentRunID = nil
-        running = false; stopping = false; activeKind = nil; fraction = 1; token = nil
-        current = report; results = Dictionary(uniqueKeysWithValues: report.results.map { ($0.kind, $0) })
-        summaries = Dictionary(uniqueKeysWithValues: (report.summaries ?? []).map { ($0.kind, $0) })
+        task = nil
+        running = false; stopping = false; activeKind = nil; fraction = 1
+        current = report
+        results = Dictionary(report.results.map { ($0.kind, $0) }, uniquingKeysWith: { first, _ in first })
+        summaries = Dictionary((report.summaries ?? []).map { ($0.kind, $0) }, uniquingKeysWith: { first, _ in first })
         liveCondition = report.conditions?.last
         hardware = report.hardware
-        do { try ReportStore.save(report); reports = ReportStore.load(); status = "Session terminée · rapport enregistré sur ce Mac." }
-        catch { status = "Mesure terminée · rapport conservé dans cette fenêtre."; self.error = "Le rapport local n’a pas pu être enregistré : \(error.localizedDescription)" }
     }
 
     private func fail(_ failure: Error) {
         currentRunID = nil
+        task = nil
         running = false; stopping = false; activeKind = nil; token = nil
         if case BenchmarkFailure.cancelled = failure {
             status = "Session arrêtée · aucun rapport ajouté."
@@ -99,30 +123,24 @@ final class AppModel: ObservableObject {
 
     func select(_ report: BenchmarkReport) {
         guard !running else { return }
-        current = report; results = Dictionary(uniqueKeysWithValues: report.results.map { ($0.kind, $0) })
-        summaries = Dictionary(uniqueKeysWithValues: (report.summaries ?? []).map { ($0.kind, $0) })
+        current = report; results = Dictionary(report.results.map { ($0.kind, $0) }, uniquingKeysWith: { first, _ in first })
+        summaries = Dictionary((report.summaries ?? []).map { ($0.kind, $0) }, uniquingKeysWith: { first, _ in first })
         liveCondition = report.conditions?.last
         liveValues = [:]; liveSamples = [:]; page = 0; fraction = 1
         status = "Rapport du \(report.startedAt.formatted(date: .abbreviated, time: .shortened))"
     }
 
     func exportReport() {
-        guard let current else { return }
-        let owner = NSApp.keyWindow ?? NSApp.windows.first(where: \.isVisible)
-        let panel = NSSavePanel()
-        panel.allowedContentTypes = [.json]
-        panel.nameFieldStringValue = "BenchLibre-\(Int(current.startedAt.timeIntervalSince1970)).json"
-        panel.title = "Exporter le rapport de benchmark"
-        NSApp.activate()
-        owner?.makeKeyAndOrderFront(nil)
-        let response = panel.runModal()
-        panel.orderOut(nil)
-        owner?.makeKeyAndOrderFront(nil)
-        guard response == .OK, let url = panel.url else { return }
-        do {
-            try ReportCodec.encode(current).write(to: url, options: .atomic)
-            status = "Rapport exporté : \(url.lastPathComponent)"
-        } catch { self.error = "Export impossible : \(error.localizedDescription)" }
+        guard let current, !exporting, !running else { return }
+        exporting = true
+        Task { [weak self] in
+            defer { self?.exporting = false }
+            do {
+                let url = try await Task.detached(priority: .utility) { try ReportStore.export(current) }.value
+                self?.status = "Copie JSON enregistrée dans Exports, à l’intérieur du conteneur."
+                NSWorkspace.shared.activateFileViewerSelecting([url])
+            } catch { self?.error = "Copie JSON impossible : \(error.localizedDescription)" }
+        }
     }
 
     func copyReport() {

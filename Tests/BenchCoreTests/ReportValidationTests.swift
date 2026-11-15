@@ -46,6 +46,22 @@ final class ReportValidationTests: XCTestCase {
         XCTAssertEqual(decoded.omissions?.first?.kind, .gpu)
     }
 
+    func testMonotonicDurationSurvivesCivilClockCorrection() throws {
+        var report = try fixture()
+        report.monotonicElapsedSeconds = 1
+        report.endedAt = report.startedAt.addingTimeInterval(-60)
+        let decoded = try ReportCodec.decode(ReportCodec.encode(report))
+        XCTAssertEqual(decoded.totalSeconds, 1)
+        report.monotonicElapsedSeconds = nil
+        try assertRejected(report)
+    }
+
+    func testMonotonicDurationMustMatchFinalObservation() throws {
+        var report = try fixture()
+        report.monotonicElapsedSeconds = 2
+        try assertRejected(report)
+    }
+
     func testPartialOmissionRetainsItsCompleteRawPasses() throws {
         var report = try fixture()
         let result = MetricResult(kind: .gpu, value: 2, unit: "GFLOP/s", elapsedSeconds: 0.1,

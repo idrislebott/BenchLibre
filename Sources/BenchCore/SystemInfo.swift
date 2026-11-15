@@ -6,10 +6,11 @@ import Darwin
 public enum SystemInfo {
     private static func sysctlString(_ name: String) -> String {
         var count = 0
-        guard sysctlbyname(name, nil, &count, nil, 0) == 0, count > 0 else { return "" }
-        var bytes = [CChar](repeating: 0, count: count)
-        guard sysctlbyname(name, &bytes, &count, nil, 0) == 0 else { return "" }
-        return String(cString: bytes)
+        guard sysctlbyname(name, nil, &count, nil, 0) == 0, count > 0, count <= 4_096 else { return "" }
+        var bytes = [UInt8](repeating: 0, count: count)
+        guard sysctlbyname(name, &bytes, &count, nil, 0) == 0, count > 0, count <= bytes.count else { return "" }
+        let end = bytes[..<count].firstIndex(of: 0) ?? count
+        return String(decoding: bytes[..<end], as: UTF8.self)
     }
 
     public static func capture() -> HardwareSummary {

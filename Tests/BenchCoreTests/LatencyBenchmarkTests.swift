@@ -59,7 +59,7 @@ final class LatencyBenchmarkTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(time, 0.1)
         XCTAssertEqual(time, result.elapsedSeconds)
         XCTAssertEqual(result.workUnit, "dependent-loads")
-        XCTAssertEqual(result.timingSource, "monotonic-wall")
+        XCTAssertEqual(result.timingSource, "monotonic-kernel-intervals")
         XCTAssertEqual(result.value, time / work * 1_000_000_000, accuracy: 1e-12)
         XCTAssertTrue(result.samples.allSatisfy { $0.isFinite && $0 > 0 })
         XCTAssertTrue(result.checksum.isFinite)

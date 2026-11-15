@@ -1,14 +1,15 @@
 // swift-tools-version: 6.0
 import PackageDescription
+
 let package = Package(
     name: "BenchLibre",
     platforms: [.macOS(.v14)],
-    products: [.executable(name: "BenchLibre", targets: ["BenchLibre"])],
+    products: [.library(name: "BenchCore", targets: ["BenchCore"])],
     targets: [
-        .target(name: "BenchKernels", publicHeadersPath: "include", cSettings: [.unsafeFlags(["-O3"])]),
-        .target(name: "BenchCore", dependencies: ["BenchKernels"], resources: [.copy("Shaders")], linkerSettings: [.linkedFramework("Metal"), .linkedFramework("IOKit")]),
-        .executableTarget(name: "BenchLibre", dependencies: ["BenchCore"], linkerSettings: [.linkedFramework("AppKit"), .linkedFramework("SwiftUI")]),
+        .target(name: "BenchKernels", publicHeadersPath: "include"),
+        .target(name: "BenchCore", dependencies: ["BenchKernels"], resources: [.copy("Shaders")],
+                linkerSettings: [.linkedFramework("Metal"), .linkedFramework("IOKit"), .linkedFramework("CryptoKit")]),
         .testTarget(name: "BenchCoreTests", dependencies: ["BenchCore"])
     ],
-    swiftLanguageModes: [.v5]
+    swiftLanguageModes: [.v6]
 )

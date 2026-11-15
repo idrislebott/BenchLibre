@@ -14,10 +14,16 @@ public struct SuiteUpdate: Sendable {
 }
 
 public enum BenchmarkRunner {
-    public static let workloadVersion = "benchlibre-suite-v2"
-    public static let applicationVersion = "0.2.0"
+    public static let workloadVersion = "benchlibre-suite-v3"
+    public static let applicationVersion = "0.3.0"
 
     static func validateResult(_ result: MetricResult, expected kind: BenchmarkKind) throws {
+        let timingSources: Set<String>
+        switch kind {
+        case .gpu: timingSources = ["metal-gpu-timestamps"]
+        case .memory, .latency: timingSources = ["monotonic-wall", "monotonic-kernel-intervals"]
+        default: timingSources = ["monotonic-wall"]
+        }
         guard result.kind == kind, result.unit == kind.unit,
               result.validated, result.value.isFinite, result.value > 0,
               result.elapsedSeconds.isFinite, result.elapsedSeconds > 0,
@@ -26,12 +32,15 @@ public enum BenchmarkRunner {
               let work = result.workAmount, work.isFinite, work > 0,
               let seconds = result.timingSeconds, seconds.isFinite, seconds > 0,
               result.workUnit == kind.workUnit,
-              result.timingSource == (kind == .gpu ? "metal-gpu-timestamps" : "monotonic-wall"),
+              let source = result.timingSource, timingSources.contains(source),
               abs(kind.measuredValue(work: work, seconds: seconds) - result.value) <= result.value * 1e-9 else {
             throw BenchmarkFailure.validationFailed("Résultat \(kind.title) invalide : le rapport n’a pas été enregistré.")
         }
     }
 
+    /// Synchronous core API. GUI callers must run it on a worker task, as the
+    /// app does with Task.detached(.userInitiated), never on the main actor.
+    /// QoS requests scheduling priority, not affinity to particular P/E cores.
     public static func run(configuration: BenchmarkConfiguration,
                            cancellation: CancellationToken,
                            progress: @escaping @Sendable (SuiteUpdate) -> Void = { _ in }) throws -> BenchmarkReport {
@@ -53,6 +62,7 @@ public enum BenchmarkRunner {
         var notes: [String] = []
         let repetitions = configuration.repetitions
         let total = Double(configuration.enabled.count * repetitions)
+        let relay = BenchmarkProgressRelay(deliver: progress)
 
         for (kindIndex, kind) in configuration.enabled.enumerated() {
             var kindTrials: [BenchmarkTrial] = []
@@ -62,7 +72,7 @@ public enum BenchmarkRunner {
                 let offset = Double(kindIndex * repetitions + iteration - 1)
                 let update: EngineProgress = { phase in
                     let fraction = min(1, max(0, phase.fraction.isFinite ? phase.fraction : 0))
-                    progress(SuiteUpdate(kind: kind, overallFraction: (offset + fraction) / total,
+                    relay.enqueue(SuiteUpdate(kind: kind, overallFraction: (offset + fraction) / total,
                         phaseFraction: fraction, value: phase.value,
                         message: "\(kind.title) · passage \(iteration)/\(repetitions) — \(phase.message)",
                         completed: nil, iteration: iteration, repetitions: repetitions,
@@ -70,8 +80,15 @@ public enum BenchmarkRunner {
                 }
                 let trialStart = monitor.elapsedSeconds
                 update(EngineUpdate(fraction: 0, message: "Préparation…"))
+                // Preserve deterministic cancellation at phase boundaries;
+                // this happens before entering an engine's timed window.
+                relay.flush()
+                try cancellation.check()
                 let result: MetricResult
                 do {
+                    // Drain coalesced progress after work/validation, also on
+                    // error, so a slow observer cannot alter measured rates.
+                    defer { relay.flush() }
                     switch kind {
                     case .cpu:
                         result = try CPUMemoryBenchmarks.runCPU(duration: configuration.secondsPerTest,
@@ -142,10 +159,12 @@ public enum BenchmarkRunner {
             notes.append("Exécution courte de validation ; ne pas utiliser comme résultat de référence.")
         }
         notes.append("Conditions observées au début, à la fin et environ chaque seconde ; ce journal ne certifie pas l’absence de bridage.")
-        return BenchmarkReport(id: UUID(), formatVersion: 2, workloadVersion: workloadVersion,
+        var report = BenchmarkReport(id: UUID(), formatVersion: 2, workloadVersion: workloadVersion,
             applicationVersion: applicationVersion, startedAt: started, endedAt: Date(),
             hardware: hardware, configuration: configuration, thermalBefore: initialThermal,
             thermalAfter: finalThermal, results: results, notes: notes,
             trials: trials, summaries: summaries, conditions: conditions, omissions: omissions)
+        report.monotonicElapsedSeconds = monitor.elapsedSeconds
+        return report
     }
 }

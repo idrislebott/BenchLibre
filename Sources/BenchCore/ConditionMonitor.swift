@@ -33,6 +33,9 @@ public final class ConditionMonitor: @unchecked Sendable {
 
     private enum State { case idle, running, finished }
     private let lock = NSLock()
+    // A potentially slow public IOKit read must never hold the snapshot lock
+    // taken by benchmark progress. This lock serializes captures and finish.
+    private let captureLock = NSLock()
     private let queue = DispatchQueue(label: "org.benchlibre.conditions", qos: .utility)
     private let interval: TimeInterval
     private let limit: Int
@@ -74,15 +77,19 @@ public final class ConditionMonitor: @unchecked Sendable {
 
     /// Repeated calls are harmless. A finished monitor is not restarted.
     public func start() {
+        captureLock.lock(); defer { captureLock.unlock() }
         lock.lock(); defer { lock.unlock() }
         guard state == .idle else { return }
         state = .running
         startNanoseconds = clock()
-        appendLocked(elapsed: 0)
+        lock.unlock()
+        let reading = read()
+        lock.lock()
+        appendLocked(elapsed: 0, reading: reading)
         guard schedulesTimer else { return }
         let source = DispatchSource.makeTimerSource(queue: queue)
         source.schedule(deadline: .now() + interval, repeating: interval,
-                        leeway: .milliseconds(max(1, min(50, Int(interval * 100)))))
+                        leeway: .milliseconds(Int(max(1, min(50, interval * 100)))))
         source.setEventHandler { [weak self] in self?.sampleNow() }
         timer = source
         source.resume()
@@ -91,9 +98,14 @@ public final class ConditionMonitor: @unchecked Sendable {
     /// Returns a stable snapshot, including a final observation. A queued timer
     /// callback cannot append after the state has changed to finished.
     public func finish() -> [ConditionSample] {
+        captureLock.lock(); defer { captureLock.unlock() }
         lock.lock()
         if state == .running {
-            appendLocked(elapsed: elapsedLocked())
+            let elapsed = elapsedLocked()
+            lock.unlock()
+            let reading = read()
+            lock.lock()
+            appendLocked(elapsed: elapsed, reading: reading)
         }
         state = .finished
         let source = timer
@@ -104,12 +116,17 @@ public final class ConditionMonitor: @unchecked Sendable {
         return result
     }
 
-    // Used by the timer and deterministic tests; all state decisions are inside
-    // the same lock as finish(), including the capture itself.
+    // Captures are serialized with finish(), but the potentially slow read is
+    // outside the short snapshot lock. No capture can append after finish().
     func sampleNow() {
+        captureLock.lock(); defer { captureLock.unlock() }
         lock.lock(); defer { lock.unlock() }
         guard state == .running else { return }
-        appendLocked(elapsed: elapsedLocked())
+        let elapsed = elapsedLocked()
+        lock.unlock()
+        let reading = read()
+        lock.lock()
+        appendLocked(elapsed: elapsed, reading: reading)
     }
 
     private func elapsedLocked() -> Double {
@@ -118,8 +135,7 @@ public final class ConditionMonitor: @unchecked Sendable {
         return max(samples.last?.elapsedSeconds ?? 0, elapsed)
     }
 
-    private func appendLocked(elapsed: Double) {
-        let reading = read()
+    private func appendLocked(elapsed: Double, reading: Reading) {
         let sample = ConditionSample(elapsedSeconds: elapsed, thermalState: reading.thermalState,
                                      powerSource: reading.powerSource, lowPowerMode: reading.lowPowerMode)
         if samples.count == limit { samples.remove(at: 1) }

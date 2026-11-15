@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 
 public enum ReportCodec {
     private static func formatter() -> ISO8601DateFormatter {
@@ -7,19 +8,24 @@ public enum ReportCodec {
         return formatter
     }
     public static func encode(_ report: BenchmarkReport) throws -> Data {
+        try ReportLimits.shape(report)
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
         encoder.dateEncodingStrategy = .custom { date, target in
             var container = target.singleValueContainer()
             try container.encode(formatter().string(from: date))
         }
-        return try encoder.encode(report)
+        let data = try encoder.encode(report)
+        guard data.count <= ReportLimits.maximumBytes else { throw BenchmarkFailure.validationFailed("Rapport trop volumineux.") }
+        return data
     }
     public static func decode(_ data: Data) throws -> BenchmarkReport {
+        guard !data.isEmpty, data.count <= ReportLimits.maximumBytes else { throw BenchmarkFailure.validationFailed("Taille de rapport non autorisée.") }
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .custom { source in
             let container = try source.singleValueContainer()
             let value = try container.decode(String.self)
+            guard value.utf8.count <= 64 else { throw BenchmarkFailure.validationFailed("Date trop longue.") }
             guard let date = formatter().date(from: value) else {
                 throw DecodingError.dataCorruptedError(in: container, debugDescription: "Date de rapport invalide")
             }
@@ -33,7 +39,7 @@ public enum ReportCodec {
             throw BenchmarkFailure.validationFailed("Liste de résultats invalide.")
         }
         for result in report.results {
-            guard result.value.isFinite, result.value > 0, result.unit == result.kind.unit else {
+            guard result.validated, result.value.isFinite, result.value > 0, result.unit == result.kind.unit else {
                 throw BenchmarkFailure.validationFailed("Mesure de rapport invalide.")
             }
             if report.formatVersion == 2 { try BenchmarkRunner.validateResult(result, expected: result.kind) }
@@ -66,7 +72,8 @@ public enum ReportCodec {
             throw BenchmarkFailure.validationFailed("Les résultats, résumés et omissions ne correspondent pas aux tests sélectionnés.")
         }
         guard report.startedAt.timeIntervalSince1970.isFinite,
-              report.endedAt.timeIntervalSince1970.isFinite, report.endedAt >= report.startedAt else {
+              report.endedAt.timeIntervalSince1970.isFinite,
+              report.monotonicElapsedSeconds != nil || report.endedAt >= report.startedAt else {
             throw BenchmarkFailure.validationFailed("La chronologie du rapport est invalide.")
         }
 
@@ -84,6 +91,11 @@ public enum ReportCodec {
                 throw BenchmarkFailure.validationFailed("Le journal des conditions est invalide ou désordonné.")
             }
             previousConditionTime = condition.elapsedSeconds
+        }
+        if let elapsed = report.monotonicElapsedSeconds {
+            guard abs(elapsed - previousConditionTime) <= timeTolerance else {
+                throw BenchmarkFailure.validationFailed("La durée monotone ne correspond pas au journal des conditions.")
+            }
         }
 
         let repetitions = report.configuration.repetitions
@@ -153,31 +165,62 @@ public enum ReportCodec {
 }
 
 public enum ReportStore {
-    public static var directory: URL {
-        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("BenchLibre/Reports", isDirectory: true)
-    }
+    public static var directory: URL { AppStorage.reports }
+    public static var exportsDirectory: URL { AppStorage.exports }
+    public static func validateExportName(_ name: String) throws { try AppStorage.validateExportName(name) }
     public static func save(_ report: BenchmarkReport) throws {
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        try ReportCodec.encode(report).write(to: directory.appendingPathComponent("\(report.id.uuidString).json"), options: .atomic)
+        let data = try ReportCodec.encode(report)
+        _ = try ReportCodec.decode(data)
+        let root = try AppStorage.prepare("Reports")
+        _ = try AppStorage.writeJSON(data, in: root, name: "\(report.id.uuidString).json")
     }
-    public static func load() -> [BenchmarkReport] {
-        load(from: directory)
+    @discardableResult public static func export(_ report: BenchmarkReport, name: String? = nil) throws -> URL {
+        let filename = name ?? "BenchLibre-\(report.id.uuidString).json"
+        try validateExportName(filename)
+        let data = try ReportCodec.encode(report)
+        _ = try ReportCodec.decode(data)
+        let root = try AppStorage.prepare("Exports")
+        return try AppStorage.writeJSON(data, in: root, name: filename)
     }
+    public static func load() -> [BenchmarkReport] { load(from: directory) }
 
+    // Internal override is used only for isolated test fixtures, never from app arguments.
     static func load(from directory: URL) -> [BenchmarkReport] {
-        guard let urls = try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil) else { return [] }
+        guard let fd = try? AppStorage.openDirectory(directory) else { return [] }
+        defer { _ = Darwin.close(fd) }
+        let duplicateFD = Darwin.dup(fd)
+        guard duplicateFD >= 0 else { return [] }
+        guard let stream = Darwin.fdopendir(duplicateFD) else { _ = Darwin.close(duplicateFD); return [] }
+        defer { _ = Darwin.closedir(stream) }
+        var candidates: [(String, Int, Double)] = []
+        var inspected = 0
+        while let entry = Darwin.readdir(stream), inspected < 4_096 {
+            inspected += 1
+            let name = withUnsafeBytes(of: entry.pointee.d_name) { bytes -> String? in
+                guard let terminator = bytes.firstIndex(of: 0) else { return nil }
+                return String(bytes: bytes[..<terminator], encoding: .utf8)
+            }
+            guard let name, (try? AppStorage.validateExportName(name)) != nil else { continue }
+            var info = stat()
+            guard Darwin.fstatat(fd, name, &info, AT_SYMLINK_NOFOLLOW) == 0,
+                  (info.st_mode & S_IFMT) == S_IFREG, info.st_nlink == 1,
+                  info.st_size > 0, info.st_size <= Int64(ReportLimits.maximumBytes) else { continue }
+            let modified = Double(info.st_mtimespec.tv_sec) + Double(info.st_mtimespec.tv_nsec) / 1e9
+            candidates.append((name, Int(info.st_size), modified))
+        }
+        candidates.sort { $0.2 == $1.2 ? $0.0 < $1.0 : $0.2 > $1.2 }
         var reports: [UUID: BenchmarkReport] = [:]
-        // An export copied back into this directory can have another filename
-        // while retaining its report identity. Pick the first valid copy in a
-        // deterministic filename order and leave every source file untouched.
-        for url in urls.filter({ $0.pathExtension == "json" }).sorted(by: { $0.lastPathComponent < $1.lastPathComponent }) {
-            guard let data = try? Data(contentsOf: url), let report = try? ReportCodec.decode(data),
-                  reports[report.id] == nil else { continue }
+        var bytes = 0
+        for (name, size, _) in candidates.prefix(256) {
+            guard bytes + size <= 32 * 1_024 * 1_024 else { continue }
+            bytes += size
+            guard let data = try? AppStorage.readJSON(in: directory, name: name),
+                  let report = try? ReportCodec.decode(data), reports[report.id] == nil else { continue }
             reports[report.id] = report
+            if reports.count == 100 { break }
         }
         return reports.values.sorted {
             $0.startedAt == $1.startedAt ? $0.id.uuidString < $1.id.uuidString : $0.startedAt > $1.startedAt
-        }.prefix(100).map { $0 }
+        }
     }
 }

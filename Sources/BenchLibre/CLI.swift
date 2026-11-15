@@ -5,7 +5,7 @@ import BenchCore
 enum CLI {
     static func runIfRequested() {
         let args = Array(CommandLine.arguments.dropFirst())
-        let modes: Set<String> = ["--cli", "--smoke", "--info", "--help"]
+        let modes: Set<String> = ["--cli", "--smoke", "--info", "--help", "--security-info"]
         guard args.contains(where: modes.contains) else { return }
         do {
             let valued: Set<String> = ["--seconds", "--threads", "--tests", "--repetitions", "--output"]
@@ -35,16 +35,22 @@ enum CLI {
                 --repetitions N           1, 3 ou 5 passages par test
                 --threads N               Nombre de threads CPU
                 --tests LIST              cpu,gpu,memory,latency,disk-read,disk-write ou all
-                --output PATH             Rapport JSON (sinon sortie standard)
+                --output NAME.json        Copie JSON dans Exports du conteneur (aucun chemin externe)
+                --security-info           Confinement et chemins natifs du conteneur
                 Les tests disque sont optionnels. Écriture : 512 Mio mesurés maximum
                 et 64 Mio de préparation par passage, dans un fichier temporaire.
                 """)
                 exit(0)
             }
+            if switches.contains("--security-info") {
+                let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+                print(String(decoding: try encoder.encode(AppSecurity.diagnostic), as: UTF8.self)); exit(0)
+            }
             if switches.contains("--info") {
                 let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
                 print(String(decoding: try encoder.encode(SystemInfo.capture()), as: UTF8.self)); exit(0)
             }
+            if let name = options["--output"] { try ReportStore.validateExportName(name) }
             let smoke = switches.contains("--smoke")
             func doubleOption(_ flag: String, fallback: Double) throws -> Double {
                 guard let raw = options[flag] else { return fallback }
@@ -76,8 +82,8 @@ enum CLI {
             let report = try BenchmarkRunner.run(configuration: config, cancellation: CancellationToken())
             let data = try ReportCodec.encode(report)
             if let output = options["--output"] {
-                try data.write(to: URL(fileURLWithPath: output), options: .atomic)
-                print("Rapport enregistré : \(output)")
+                let url = try ReportStore.export(report, name: output)
+                print("Rapport enregistré dans le conteneur : \(url.path)")
             } else { print(String(decoding: data, as: UTF8.self)) }
             exit(0)
         } catch {

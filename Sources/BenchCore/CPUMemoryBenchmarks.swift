@@ -10,15 +10,19 @@ public enum CPUMemoryBenchmarks {
         private var operations: UInt64 = 0
         private var checksum: Double = 0
         private var invalid = false
-        func record(_ result: BLCPUResult) {
+        private var finishedAt: UInt64 = 0
+        func record(_ result: BLCPUResult, finishedAt instant: UInt64 = DispatchTime.now().uptimeNanoseconds) {
             lock.lock(); defer { lock.unlock() }
-            operations += result.operations
+            let sum = operations.addingReportingOverflow(result.operations)
+            operations = sum.overflow ? operations : sum.partialValue
+            finishedAt = max(finishedAt, instant)
+            invalid = invalid || sum.overflow
             checksum += result.checksum
             invalid = invalid || !result.checksum.isFinite || result.operations == 0
         }
-        func snapshot() -> (operations: UInt64, checksum: Double, invalid: Bool) {
+        func snapshot() -> (operations: UInt64, checksum: Double, invalid: Bool, finishedAt: UInt64) {
             lock.lock(); defer { lock.unlock() }
-            return (operations, checksum, invalid)
+            return (operations, checksum, invalid, finishedAt)
         }
     }
 
@@ -67,12 +71,16 @@ public enum CPUMemoryBenchmarks {
             iterations = min(maximumChunk, max(iterations + 1, UInt64(Double(iterations) * ratio)))
         }
         let chunkIterations = iterations
+        let warmup = CPUAccumulator()
         DispatchQueue.concurrentPerform(iterations: threads) { worker in
             if !cancellation.isCancelled {
-                _ = bl_cpu_fp32(chunkIterations, UInt32(worker + 1))
+                warmup.record(bl_cpu_fp32(chunkIterations, UInt32(worker + 1)))
             }
         }
         try cancellation.check()
+        guard !warmup.snapshot().invalid, warmup.snapshot().operations > 0 else {
+            throw BenchmarkFailure.validationFailed("Échauffement CPU invalide.")
+        }
 
         let accumulator = CPUAccumulator()
         let group = DispatchGroup()
@@ -95,8 +103,8 @@ public enum CPUMemoryBenchmarks {
         var previousTime = start
         var previousOperations: UInt64 = 0
         while group.wait(timeout: .now() + 0.1) == .timedOut {
-            let now = nanoseconds()
             let snapshot = accumulator.snapshot()
+            let now = snapshot.finishedAt > start ? snapshot.finishedAt : nanoseconds()
             let interval = seconds(previousTime, now)
             let delta = snapshot.operations - previousOperations
             if delta > 0, interval > 0 {
@@ -111,14 +119,14 @@ public enum CPUMemoryBenchmarks {
         }
         // Always join the workers before propagating cancellation.
         try cancellation.check()
-        let end = nanoseconds()
         let snapshot = accumulator.snapshot()
+        let end = max(start, snapshot.finishedAt)
         let elapsed = seconds(start, end)
         guard !snapshot.invalid, snapshot.operations > 0, snapshot.checksum.isFinite, elapsed > 0 else {
             throw BenchmarkFailure.validationFailed("La mesure CPU n’a pas produit de travail vérifiable.")
         }
         let value = Double(snapshot.operations) / elapsed / 1_000_000_000
-        let lastInterval = seconds(previousTime, end)
+        let lastInterval = end >= previousTime ? seconds(previousTime, end) : 0
         let delta = snapshot.operations - previousOperations
         if delta > 0, lastInterval >= 0.05 {
             samples.append(Double(delta) / lastInterval / 1_000_000_000)
@@ -128,7 +136,7 @@ public enum CPUMemoryBenchmarks {
         return MetricResult(
             kind: .cpu, value: value, unit: "GFLOP/s", elapsedSeconds: elapsed,
             samples: samples, checksum: snapshot.checksum,
-            details: "FP32 FMA, 8 chaînes SIMD de 4 éléments, 64 FLOP/itération, \(threads) thread\(threads > 1 ? "s" : ""). Somme du travail de tous les threads divisée par le temps monotone écoulé ; préparation et échauffement exclus.",
+            details: "FP32 FMA, 8 chaînes SIMD de 4 éléments, 64 FLOP/itération, \(threads) thread\(threads > 1 ? "s" : ""). CPU-FP32-v2. Travail de tous les workers / temps monotone du démarrage au dernier lot réellement achevé ; attente du moniteur et callbacks après ce lot exclus. Résultats d’échauffement consommés. QoS userInitiated ; placement P/E décidé par macOS.",
             validated: true,
             workAmount: Double(snapshot.operations), workUnit: "FLOP",
             timingSeconds: elapsed, timingSource: "monotonic-wall"
@@ -158,30 +166,31 @@ public enum CPUMemoryBenchmarks {
         try cancellation.check()
 
         let bytesPerPass = bl_memory_logical_bytes_per_pass(buffers)
-        let start = nanoseconds()
-        let deadline = start + UInt64(duration * 1_000_000_000)
+        var measuredSeconds = 0.0
         var passes: UInt64 = 0
         var samples: [Double] = []
-        var previousTime = start
+        var sampleSeconds = 0.0
         var previousPasses: UInt64 = 0
-        while nanoseconds() < deadline {
+        while measuredSeconds < duration {
             try cancellation.check()
+            let kernelStart = nanoseconds()
             bl_memory_triad(buffers)
+            let interval = seconds(kernelStart, nanoseconds())
+            guard interval > 0 else { throw BenchmarkFailure.validationFailed("Horloge mémoire invalide.") }
             passes += 1
-            let now = nanoseconds()
-            let interval = seconds(previousTime, now)
-            if interval >= 0.1 {
-                let sample = Double((passes - previousPasses) * bytesPerPass) / interval / 1_000_000_000
+            measuredSeconds += interval
+            sampleSeconds += interval
+            if sampleSeconds >= 0.1 {
+                let sample = Double((passes - previousPasses) * bytesPerPass) / sampleSeconds / 1_000_000_000
                 samples.append(sample)
-                previousTime = now
+                sampleSeconds = 0
                 previousPasses = passes
-                progress(EngineUpdate(fraction: min(seconds(start, now) / duration, 0.995), value: sample,
+                progress(EngineUpdate(fraction: min(measuredSeconds / duration, 0.995), value: sample,
                                       message: "Triade mémoire : deux lectures et une écriture…"))
             }
         }
-        let end = nanoseconds()
         try cancellation.check()
-        let elapsed = seconds(start, end)
+        let elapsed = measuredSeconds
         let checksum = bl_memory_checksum(buffers)
         let expected = bl_memory_expected_checksum(buffers)
         guard passes > 0, elapsed > 0, checksum.isFinite, checksum == expected,
@@ -189,7 +198,7 @@ public enum CPUMemoryBenchmarks {
             throw BenchmarkFailure.validationFailed("La vérification complète du résultat mémoire a échoué.")
         }
         let value = Double(passes * bytesPerPass) / elapsed / 1_000_000_000
-        let lastInterval = seconds(previousTime, end)
+        let lastInterval = sampleSeconds
         if passes > previousPasses, lastInterval >= 0.05 {
             samples.append(Double((passes - previousPasses) * bytesPerPass) / lastInterval / 1_000_000_000)
         }
@@ -198,10 +207,10 @@ public enum CPUMemoryBenchmarks {
         return MetricResult(
             kind: .memory, value: value, unit: "Go/s", elapsedSeconds: elapsed,
             samples: samples, checksum: checksum,
-            details: "Triade mono-thread A = B + 3 × C, 3 × 64 Mio, \(passes) passages. Débit en Go/s décimaux (octets / 10⁹) : 2 lectures + 1 écriture, soit 12 octets logiques par élément. Le trafic matériel supplémentaire, dont write-allocate, n’est pas compté. Allocation, premier accès, échauffement et validation exclus.",
+            details: "Triade mono-thread A = B + 3 × C, 3 × 64 Mio, \(passes) passages. Débit en Go/s décimaux (octets / 10⁹) : 2 lectures + 1 écriture, soit 12 octets logiques par élément. Le trafic matériel supplémentaire, dont write-allocate, n’est pas compté. Triad-v2 : somme des fenêtres du noyau C (appel inclus) ; callbacks, allocation, premier accès, échauffement et validation exclus.",
             validated: true,
             workAmount: Double(passes * bytesPerPass), workUnit: "logical-bytes",
-            timingSeconds: elapsed, timingSource: "monotonic-wall"
+            timingSeconds: elapsed, timingSource: "monotonic-kernel-intervals"
         )
     }
 }

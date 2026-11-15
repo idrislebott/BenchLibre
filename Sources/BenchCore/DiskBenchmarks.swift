@@ -13,12 +13,12 @@ public enum DiskBenchmarks {
         var fileBytes: Int = 64 * 1_024 * 1_024
         var chunkBytes: Int = 1_024 * 1_024
         var maximumTransferBytes: UInt64
-        var temporaryRoot: URL = FileManager.default.temporaryDirectory
+        var temporaryRoot: URL = AppStorage.temporary
 
         init(fileBytes: Int = 64 * 1_024 * 1_024,
              chunkBytes: Int = 1_024 * 1_024,
              maximumTransferBytes: UInt64,
-             temporaryRoot: URL = FileManager.default.temporaryDirectory) {
+             temporaryRoot: URL = AppStorage.temporary) {
             self.fileBytes = fileBytes; self.chunkBytes = chunkBytes
             self.maximumTransferBytes = maximumTransferBytes; self.temporaryRoot = temporaryRoot
         }
@@ -63,32 +63,41 @@ public enum DiskBenchmarks {
         try cancellation.check()
         progress(EngineUpdate(fraction: 0, message: "Préparation du fichier temporaire de \(settings.fileBytes / mib) Mio…"))
 
-        let available: Double
-        do {
-            let attributes = try FileManager.default.attributesOfFileSystem(forPath: settings.temporaryRoot.path)
-            guard let free = attributes[.systemFreeSize] as? NSNumber else {
-                throw BenchmarkFailure.unavailable("L’espace libre du dossier temporaire n’est pas disponible.")
-            }
-            available = free.doubleValue
-        } catch {
-            throw BenchmarkFailure.unavailable("Impossible de vérifier l’espace du dossier temporaire : \(error.localizedDescription)")
+        guard settings.temporaryRoot.isFileURL else {
+            throw BenchmarkFailure.invalidConfiguration("Le dossier temporaire doit être local.")
         }
+        if settings.temporaryRoot.standardizedFileURL == AppStorage.temporary.standardizedFileURL {
+            _ = try AppStorage.prepare("Temporary")
+        }
+        let rootFD = try AppStorage.openDirectory(settings.temporaryRoot)
+        defer { _ = Darwin.close(rootFD) }
+        var filesystem = statfs()
+        guard Darwin.fstatfs(rootFD, &filesystem) == 0 else { throw ioFailure("Espace libre inaccessible") }
+        let available = Double(filesystem.f_bavail) * Double(filesystem.f_bsize)
         guard available.isFinite, available >= Double(settings.fileBytes + 64 * mib) else {
             throw BenchmarkFailure.unavailable("Espace libre insuffisant pour le fichier temporaire et sa réserve de 64 Mio.")
         }
-
-        let directory = settings.temporaryRoot.appendingPathComponent("BenchLibre-SSD-\(UUID().uuidString)", isDirectory: true)
-        do {
-            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false,
-                                                    attributes: [.posixPermissions: 0o700])
-        } catch {
-            throw BenchmarkFailure.unavailable("Le dossier temporaire du test fichier n’a pas pu être créé : \(error.localizedDescription)")
+        let workspaceName = "io-\(UUID().uuidString)"
+        guard Darwin.mkdirat(rootFD, workspaceName, mode_t(0o700)) == 0 else {
+            throw ioFailure("Création du dossier privé de mesure impossible")
         }
-        defer { try? FileManager.default.removeItem(at: directory) }
+        let workspaceFD = Darwin.openat(rootFD, workspaceName, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        guard workspaceFD >= 0 else {
+            _ = Darwin.unlinkat(rootFD, workspaceName, AT_REMOVEDIR)
+            throw ioFailure("Ouverture du dossier privé impossible")
+        }
+        defer { _ = Darwin.close(workspaceFD) }
+        var removed = false
+        func cleanup() -> Bool {
+            let fileRemoved = Darwin.unlinkat(workspaceFD, "payload.bin", 0) == 0 || errno == ENOENT
+            let directoryRemoved = Darwin.unlinkat(rootFD, workspaceName, AT_REMOVEDIR) == 0 || errno == ENOENT
+            removed = fileRemoved && directoryRemoved
+            return removed
+        }
+        defer { if !removed { _ = cleanup() } }
         try cancellation.check()
-        let file = directory.appendingPathComponent("payload.bin")
-        let descriptor = file.path.withCString { Darwin.open($0, O_RDWR | O_CREAT | O_EXCL | O_CLOEXEC, mode_t(0o600)) }
-        guard descriptor >= 0 else { throw ioFailure("Impossible de créer le fichier temporaire") }
+        let descriptor = Darwin.openat(workspaceFD, "payload.bin", O_RDWR | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, mode_t(0o600))
+        guard descriptor >= 0 else { throw ioFailure("Création du fichier temporaire impossible") }
         defer { _ = Darwin.close(descriptor) }
         guard Darwin.fcntl(descriptor, F_NOCACHE, 1) == 0 else {
             throw ioFailure("F_NOCACHE indisponible ; aucun débit avec cache de données n’est substitué")
@@ -104,8 +113,9 @@ public enum DiskBenchmarks {
             throw BenchmarkFailure.unavailable("Allocation du tampon de lecture impossible.")
         }
         defer { free(input) }
+        pattern.bindMemory(to: UInt64.self, capacity: settings.fileBytes / 8).initialize(repeating: 0, count: settings.fileBytes / 8)
+        input.bindMemory(to: UInt64.self, capacity: settings.fileBytes / 8).initialize(repeating: 0, count: settings.fileBytes / 8)
         try fillPattern(pattern, bytes: settings.fileBytes, cancellation: cancellation)
-        memset(input, 0, settings.fileBytes)
 
         // Allocate and fill the file before opening any measured interval.
         try seekStart(descriptor)
@@ -123,23 +133,13 @@ public enum DiskBenchmarks {
         var sampleBytes: UInt64 = 0
         var sampleSeconds = 0.0
         var finalChecksum = expectedChecksum
-        var lastProgress: UInt64 = 0
         let writing = operation == .write
         while measuredSeconds < duration && totalBytes < settings.maximumTransferBytes {
             try cancellation.check()
             let before = now()
             try seekStart(descriptor)
             try transfer(descriptor, buffer: writing ? pattern : input, settings: settings,
-                         writing: writing, cancellation: cancellation) { transferred in
-                let instant = now()
-                guard lastProgress == 0 || seconds(lastProgress, instant) >= 0.1 else { return }
-                lastProgress = instant
-                let pendingSeconds = seconds(before, instant)
-                let timeFraction = (measuredSeconds + pendingSeconds) / duration
-                let byteFraction = Double(totalBytes + UInt64(transferred)) / Double(settings.maximumTransferBytes)
-                progress(EngineUpdate(fraction: min(0.999, max(timeFraction, byteFraction)),
-                                      message: writing ? "Écriture du fichier temporaire…" : "Lecture du fichier temporaire…"))
-            }
+                         writing: writing, cancellation: cancellation)
             if writing { try synchronize(descriptor, cancellation: cancellation) }
             let interval = seconds(before, now())
             guard interval.isFinite, interval > 0 else {
@@ -189,10 +189,9 @@ public enum DiskBenchmarks {
         let capped = totalBytes == settings.maximumTransferBytes && measuredSeconds < duration
         let capDescription = capped ? "Budget d’octets atteint avant la durée demandée." : "Fenêtre de durée demandée atteinte."
         let operationDescription = writing ? "Écriture séquentielle ; fsync inclus dans chaque fenêtre." : "Lecture séquentielle ; tous les octets vérifiés après chaque fenêtre."
-        let details = "\(operationDescription) Fichier temporaire : \(settings.fileBytes) octets, blocs de \(settings.chunkBytes) octets ; \(totalBytes) octets transférés, plafond \(settings.maximumTransferBytes). \(capDescription) F_NOCACHE activé pour le descripteur : cache de données désactivé, sans garantie de contournement des caches du contrôleur ou du périphérique. Somme des fenêtres monotones seek + E/S\(writing ? " + fsync" : "") ; allocation, création initiale, premier accès et validation exclus. Fichier supprimé à la fin."
-        do { try FileManager.default.removeItem(at: directory) }
-        catch {
-            throw BenchmarkFailure.unavailable("La mesure est terminée, mais le fichier temporaire n’a pas pu être supprimé : \(error.localizedDescription)")
+        let details = "File-IO-v2. \(operationDescription) Fichier temporaire : \(settings.fileBytes) octets, blocs de \(settings.chunkBytes) octets ; \(totalBytes) octets transférés, plafond \(settings.maximumTransferBytes). \(capDescription) F_NOCACHE activé pour le descripteur : cache de données désactivé, sans garantie de contournement des caches du contrôleur ou du périphérique. Somme des fenêtres monotones seek + E/S\(writing ? " + fsync" : "") ; allocation, création initiale, premier accès et validation exclus. Fichier supprimé à la fin."
+        guard cleanup() else {
+            throw BenchmarkFailure.unavailable("La mesure est terminée mais le nettoyage du dossier privé a échoué.")
         }
         progress(EngineUpdate(fraction: 1, value: rate, message: writing ? "Écriture fichier validée." : "Lecture fichier validée."))
         return MetricResult(kind: writing ? .diskWrite : .diskRead, value: rate, unit: "Go/s",
@@ -235,7 +234,7 @@ public enum DiskBenchmarks {
     }
 
     private static func fillPattern(_ pointer: UnsafeMutableRawPointer, bytes: Int, cancellation: CancellationToken) throws {
-        let words = pointer.bindMemory(to: UInt64.self, capacity: bytes / 8)
+        let words = pointer.assumingMemoryBound(to: UInt64.self)
         var state: UInt64 = 0x6a09e667f3bcc909
         for index in 0..<(bytes / 8) {
             if index.isMultiple(of: 65_536) { try cancellation.check() }

@@ -4,8 +4,17 @@
 #include <stdint.h>
 #include <limits.h>
 
+#if defined(__FAST_MATH__) || (defined(__FINITE_MATH_ONLY__) && __FINITE_MATH_ONLY__ > 0)
+#error "BenchLibre requires strict floating-point semantics; disable fast math."
+#endif
+
 #ifndef __has_builtin
 #define __has_builtin(x) 0
+#endif
+
+#if defined(__clang__)
+#pragma clang fp reassociate(off)
+#pragma clang fp contract(off)
 #endif
 
 typedef float BLFloat4 __attribute__((ext_vector_type(4)));
@@ -26,7 +35,7 @@ static inline float bl_cpu_initial(uint32_t seed, unsigned lane) {
         + (float)lane * (1.0f / 32.0f);
 }
 
-static void bl_cpu_compute(uint64_t iterations, uint32_t seed, float out[32]) {
+__attribute__((noinline)) static void bl_cpu_compute(uint64_t iterations, uint32_t seed, float out[32]) {
     BLFloat4 v[8];
     for (unsigned chain = 0; chain < 8; ++chain)
         for (unsigned lane = 0; lane < 4; ++lane)
@@ -50,8 +59,8 @@ static void bl_cpu_compute(uint64_t iterations, uint32_t seed, float out[32]) {
             out[chain * 4 + lane] = v[chain][lane];
 }
 
-BLCPUResult bl_cpu_fp32(uint64_t iterations, uint32_t seed) {
-    if (iterations > UINT64_MAX / 64U) return (BLCPUResult){NAN, 0};
+__attribute__((noinline)) BLCPUResult bl_cpu_fp32(uint64_t iterations, uint32_t seed) {
+    if (iterations > UINT64_C(4194304)) return (BLCPUResult){NAN, 0};
     float values[32];
     bl_cpu_compute(iterations, seed, values);
     double checksum = 0;
@@ -91,17 +100,19 @@ static inline float bl_memory_c(size_t i) {
 }
 
 BLMemoryContext *bl_memory_create(size_t float_count) {
-    if (float_count == 0 || float_count > SIZE_MAX / sizeof(float)) return NULL;
+    if (float_count == 0 || float_count > (size_t)16 * 1024 * 1024) return NULL;
     BLMemoryContext *ctx = calloc(1, sizeof(*ctx));
     if (!ctx) return NULL;
     ctx->count = float_count;
     size_t bytes = float_count * sizeof(float);
-    if (posix_memalign((void **)&ctx->a, 64, bytes) != 0 ||
-        posix_memalign((void **)&ctx->b, 64, bytes) != 0 ||
-        posix_memalign((void **)&ctx->c, 64, bytes) != 0) {
-        bl_memory_destroy(ctx);
+    void *a = NULL, *b = NULL, *c = NULL;
+    if (posix_memalign(&a, 64, bytes) != 0 ||
+        posix_memalign(&b, 64, bytes) != 0 ||
+        posix_memalign(&c, 64, bytes) != 0) {
+        free(a); free(b); free(c); free(ctx);
         return NULL;
     }
+    ctx->a = a; ctx->b = b; ctx->c = c;
     for (size_t i = 0; i < float_count; ++i) {
         ctx->a[i] = 0;
         ctx->b[i] = bl_memory_b(i);
@@ -115,7 +126,8 @@ void bl_memory_destroy(BLMemoryContext *context) {
     free(context->a); free(context->b); free(context->c); free(context);
 }
 
-void bl_memory_triad(BLMemoryContext *context) {
+__attribute__((noinline)) void bl_memory_triad(BLMemoryContext *context) {
+    if (!context) return;
     float *restrict a = context->a;
     const float *restrict b = context->b;
     const float *restrict c = context->c;
@@ -123,17 +135,19 @@ void bl_memory_triad(BLMemoryContext *context) {
 }
 
 uint64_t bl_memory_logical_bytes_per_pass(const BLMemoryContext *context) {
-    return (uint64_t)context->count * sizeof(float) * 3U;
+    return context ? (uint64_t)context->count * sizeof(float) * 3U : 0;
 }
-size_t bl_memory_float_count(const BLMemoryContext *context) { return context->count; }
+size_t bl_memory_float_count(const BLMemoryContext *context) { return context ? context->count : 0; }
 
 double bl_memory_checksum(const BLMemoryContext *context) {
+    if (!context) return NAN;
     double sum = 0;
     for (size_t i = 0; i < context->count; ++i) sum += context->a[i];
     return sum;
 }
 
 double bl_memory_expected_checksum(const BLMemoryContext *context) {
+    if (!context) return NAN;
     double period = 0, tail = 0;
     size_t remainder = context->count % 4096U;
     for (size_t i = 0; i < 4096U; ++i) {

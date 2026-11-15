@@ -48,9 +48,11 @@ BLLatencyContext *bl_latency_create_cancellable(uint32_t node_count, uint64_t se
     context->count = node_count;
     const size_t bytes = (size_t)node_count * sizeof(BLLatencyNode);
     uint32_t *order = malloc((size_t)node_count * sizeof(*order));
-    if (!order || posix_memalign((void **)&context->nodes, 64, bytes) != 0) {
+    void *allocation = NULL;
+    if (!order || posix_memalign(&allocation, 64, bytes) != 0) {
         free(order); bl_latency_destroy(context); return NULL;
     }
+    context->nodes = allocation;
     /* First touch is preparation, never part of the timed chase. */
     memset(context->nodes, 0, bytes);
     for (uint32_t i = 0; i < node_count; ++i) {
@@ -136,12 +138,14 @@ int bl_latency_validate_cancellable(const BLLatencyContext *context,
 
 uint32_t bl_latency_expected_index(const BLLatencyContext *context,
                                    uint32_t start_index, uint64_t loads) {
-    if (!context || start_index >= context->count) return UINT32_MAX;
+    if (!context || !context->nodes || context->count < 2 || start_index >= context->count) return UINT32_MAX;
     /* Validated topology is a single cycle; the scalar reference only needs
      * the remainder. This bounds post-measurement validation to one sweep. */
     uint32_t index = start_index;
-    for (uint64_t i = 0, remainder = loads % context->count; i < remainder; ++i)
+    for (uint64_t i = 0, remainder = loads % context->count; i < remainder; ++i) {
+        if (index >= context->count) return UINT32_MAX;
         index = context->nodes[index].next;
+    }
     return index;
 }
 
@@ -150,7 +154,7 @@ __attribute__((noinline))
 #endif
 BLLatencyResult bl_latency_chase(const BLLatencyContext *context,
                                 uint32_t start_index, uint64_t loads) {
-    if (!context || start_index >= context->count)
+    if (!context || !context->nodes || start_index >= context->count || loads > UINT64_C(1048576))
         return (BLLatencyResult){0, UINT32_MAX, 0};
     const BLLatencyNode *nodes = context->nodes;
     uint32_t index = start_index;
