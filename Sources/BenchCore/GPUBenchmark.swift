@@ -18,19 +18,19 @@ public enum GPUBenchmark {
     static let expectedShaderSHA256 = "a7dfa6d8eb168939869b17df232fe4b3733efdadb87a04d1dbf1381023ac5041"
     private final class ResourceOwner {}
 
-    public static func run(duration: Double, cancellation: CancellationToken, progress: @escaping EngineProgress) throws -> MetricResult {
-        try autoreleasepool { try measure(duration: duration, cancellation: cancellation, progress: progress) }
+    public static func run(duration: Double, cancellation: CancellationToken, language: AppLanguage = .english, progress: @escaping EngineProgress) throws -> MetricResult {
+        try autoreleasepool { try measure(duration: duration, cancellation: cancellation, language: language, progress: progress) }
     }
 
-    private static func measure(duration: Double, cancellation: CancellationToken, progress: @escaping EngineProgress) throws -> MetricResult {
+    private static func measure(duration: Double, cancellation: CancellationToken, language: AppLanguage = .english, progress: @escaping EngineProgress) throws -> MetricResult {
         guard duration.isFinite, duration >= 0.1, duration <= 120 else {
-            throw BenchmarkFailure.invalidConfiguration("Durée GPU invalide (0,1 à 120 secondes).")
+            throw BenchmarkFailure.invalidConfiguration(Localizer(language).text("Invalid GPU duration (0.1 to 120 seconds)."))
         }
         try cancellation.check()
-        progress(EngineUpdate(fraction: 0, message: "Préparation du pipeline Metal…"))
+        progress(EngineUpdate(fraction: 0, message: Localizer(language).text("Preparing the Metal pipeline…")))
         try cancellation.check()
         guard let device = MTLCreateSystemDefaultDevice(), let queue = device.makeCommandQueue() else {
-            throw BenchmarkFailure.unavailable("Aucun GPU Metal utilisable sur ce Mac.")
+            throw BenchmarkFailure.unavailable(Localizer(language).text("No usable Metal GPU on this Mac."))
         }
         let options = MTLCompileOptions()
         // Dependent, explicit FMAs retain strict rounding semantics. No unsafe
@@ -41,12 +41,12 @@ public enum GPUBenchmark {
         } else { options.fastMathEnabled = false }
         let library = try device.makeLibrary(source: try shaderSource(), options: options)
         guard let function = library.makeFunction(name: "fp32_fma_v2") else {
-            throw BenchmarkFailure.unavailable("Le noyau Metal vérifié est introuvable.")
+            throw BenchmarkFailure.unavailable(Localizer(language).text("The verified Metal kernel could not be found."))
         }
         let pipeline = try device.makeComputePipelineState(function: function)
         try cancellation.check()
         guard pipeline.threadExecutionWidth > 0, pipeline.maxTotalThreadsPerThreadgroup > 0 else {
-            throw BenchmarkFailure.unavailable("Les limites du pipeline Metal sont invalides.")
+            throw BenchmarkFailure.unavailable(Localizer(language).text("Invalid Metal pipeline limits."))
         }
         let seedBytes = threadCount * MemoryLayout<SIMD4<Float>>.stride
         let outputElements = threadCount * maximumBatch
@@ -54,10 +54,10 @@ public enum GPUBenchmark {
         guard seedBytes <= device.maxBufferLength, outputBytes <= device.maxBufferLength,
               let seeds = device.makeBuffer(length: seedBytes, options: .storageModeShared),
               let output = device.makeBuffer(length: outputBytes, options: .storageModeShared) else {
-            throw BenchmarkFailure.unavailable("Impossible d’allouer les tampons GPU bornés (32 Mio de sorties maximum).")
+            throw BenchmarkFailure.unavailable(Localizer(language).text("Unable to allocate bounded GPU buffers (at most 32 MiB of output)."))
         }
-        seeds.label = "BenchLibre FP32 input"
-        output.label = "BenchLibre distinct FP32 dispatch outputs"
+        seeds.label = Localizer(language).text("BenchLibre FP32 input")
+        output.label = Localizer(language).text("BenchLibre distinct FP32 dispatch outputs")
         let source = seeds.contents().bindMemory(to: SIMD4<Float>.self, capacity: threadCount)
         let values = output.contents().bindMemory(to: SIMD4<Float>.self, capacity: outputElements)
         for index in 0..<threadCount { source.advanced(by: index).initialize(to: seed(index)) }
@@ -82,9 +82,9 @@ public enum GPUBenchmark {
                 guard (1...maximumBatch).contains(repetitions),
                       let commands = queue.makeCommandBuffer(),
                       let encoder = commands.makeComputeCommandEncoder() else {
-                    throw BenchmarkFailure.unavailable("Impossible de créer une commande Metal bornée.")
+                    throw BenchmarkFailure.unavailable(Localizer(language).text("Unable to create a bounded Metal command."))
                 }
-                commands.label = "BenchLibre FP32-FMA-v2"
+                commands.label = Localizer(language).text("BenchLibre FP32-FMA-v2")
                 encoder.setComputePipelineState(pipeline)
                 encoder.setBuffer(seeds, offset: 0, index: 0)
                 encoder.setBuffer(output, offset: 0, index: 1)
@@ -106,10 +106,10 @@ public enum GPUBenchmark {
                 commands.waitUntilCompleted()
                 let hostSeconds = seconds(hostStart, now())
                 if let error = commands.error {
-                    throw BenchmarkFailure.unavailable("Erreur du GPU : \(error.localizedDescription)")
+                    throw BenchmarkFailure.unavailable(Localizer(language).text("GPU error: {v0}", values: ["v0": String(describing: error.localizedDescription)]))
                 }
                 guard commands.status == .completed else {
-                    throw BenchmarkFailure.unavailable("La commande Metal ne s’est pas terminée.")
+                    throw BenchmarkFailure.unavailable(Localizer(language).text("The Metal command did not complete."))
                 }
                 let gpuSeconds = try checkedGPUSeconds(start: commands.gpuStartTime,
                                                        end: commands.gpuEndTime, hostSeconds: hostSeconds)
@@ -120,7 +120,7 @@ public enum GPUBenchmark {
 
         _ = try dispatch(16, repetitions: 1)
         _ = try validate(values: readView, iterations: 16, slices: 1)
-        progress(EngineUpdate(fraction: 0, message: "Échauffement et validation du GPU…"))
+        progress(EngineUpdate(fraction: 0, message: Localizer(language).text("Warming up and validating the GPU…")))
         let calibration = try dispatch(iterations, repetitions: 1)
         let batch = Int(max(1, min(Double(maximumBatch), (0.015 / calibration).rounded(.down))))
         // Poison active output slices again after calibration. A missed GPU
@@ -147,7 +147,7 @@ public enum GPUBenchmark {
                 let observed = readView[slice * threadCount + probe]
                 for lane in 0..<4 {
                     guard observed[lane].isFinite else {
-                        throw BenchmarkFailure.validationFailed("Une sortie GPU n’a pas été écrite correctement.")
+                        throw BenchmarkFailure.validationFailed(Localizer(language).text("A GPU output was not written correctly."))
                     }
                     observedChecksum += Double(observed[lane])
                 }
@@ -162,7 +162,7 @@ public enum GPUBenchmark {
                 let rate = sampleFLOPs / sampleGPUSeconds / 1_000_000_000
                 samples.append(rate)
                 progress(EngineUpdate(fraction: min(0.999, elapsed / duration), value: rate,
-                                     message: "Calcul FP32 sur \(device.name)"))
+                                     message: Localizer(language).text("FP32 compute on {v0}", values: ["v0": String(describing: device.name)])))
                 sampleStart = now(); sampleGPUSeconds = 0; sampleFLOPs = 0
             }
         }
@@ -171,16 +171,16 @@ public enum GPUBenchmark {
         try cancellation.check()
         let checksum = observedChecksum + (try validate(values: readView, iterations: iterations, slices: batch))
         guard totalGPUSeconds > 0, totalFLOPs > 0, batches > 0, checksum.isFinite else {
-            throw BenchmarkFailure.validationFailed("Le test GPU n’a produit aucune mesure valide.")
+            throw BenchmarkFailure.validationFailed(Localizer(language).text("The GPU test produced no valid measurement."))
         }
         let value = totalFLOPs / totalGPUSeconds / 1_000_000_000
         guard value.isFinite, value > 0, samples.allSatisfy({ $0.isFinite && $0 > 0 }) else {
-            throw BenchmarkFailure.validationFailed("Le débit GPU mesuré n’est pas valide.")
+            throw BenchmarkFailure.validationFailed(Localizer(language).text("The measured GPU throughput is invalid."))
         }
-        progress(EngineUpdate(fraction: 1, value: value, message: "Sorties GPU consommées et contrôlées"))
+        progress(EngineUpdate(fraction: 1, value: value, message: Localizer(language).text("GPU outputs consumed and checked")))
         return MetricResult(kind: .gpu, value: value, unit: "GFLOP/s", elapsedSeconds: elapsed,
                             samples: samples, checksum: checksum,
-                            details: "FP32-FMA-v2 : 32 768 threads × 512 itérations × 16 fma (2 FLOP/fma), soit 536 870 912 FLOP par dispatch. \(batch) dispatch(s) par commande, \(batches) commandes, sorties distinctes par dispatch (32 Mio maximum). Horodatages GPU vérifiés et cumulés ; consommation CPU d’une sortie par dispatch après chaque commande, contrôle fini exhaustif des sorties finales et référence scalaire sur 7 positions × 4 composantes par tranche, hors dénominateur GPU. Échauffement, calibration et validation exclus du débit. Initialisation, contrôle de bornes et réduction font partie du noyau chronométré, sans être ajoutés au compte de FLOP. \(device.name). Source SHA-256 : \(expectedShaderSHA256). Ce débit ne certifie pas une occupation matérielle de 100 %.",
+                            details: Localizer(language).text("FP32-FMA-v2: 32,768 threads × 512 iterations × 16 fma (2 FLOP/fma), 536,870,912 FLOP per dispatch. {v0} dispatch(es) per command, {v1} commands, distinct dispatch outputs (at most 32 MiB). GPU timestamps checked and accumulated; one output per dispatch consumed on CPU after each command, full finite scan of final outputs and scalar reference at 7 positions × 4 components per slice, outside the GPU denominator. Warm-up, calibration and validation excluded from throughput. Initialization, bounds checks and reduction are inside the timed kernel but not added to the FLOP count. {v2}. Source SHA-256: {v3}. This rate does not certify 100% hardware occupancy.", values: ["v0": String(describing: batch), "v1": String(describing: batches), "v2": String(describing: device.name), "v3": String(describing: expectedShaderSHA256)]),
                             validated: true, workAmount: totalFLOPs, workUnit: "FLOP",
                             timingSeconds: totalGPUSeconds, timingSource: "metal-gpu-timestamps")
     }
@@ -192,7 +192,7 @@ public enum GPUBenchmark {
         guard start.isFinite, end.isFinite, start > 0, end > start,
               gpuSeconds.isFinite, hostSeconds.isFinite, hostSeconds > 0,
               gpuSeconds <= hostSeconds + max(0.005, hostSeconds * 0.1) else {
-            throw BenchmarkFailure.unavailable("Horodatage GPU absent ou incohérent ; aucun débit estimé n’est substitué.")
+            throw BenchmarkFailure.unavailable(Localizer(.english).text("Missing or inconsistent GPU timestamps; no estimated rate is substituted."))
         }
         return gpuSeconds
     }
@@ -226,13 +226,13 @@ public enum GPUBenchmark {
 
     private static func validate(values: UnsafeBufferPointer<SIMD4<Float>>, iterations: UInt32, slices: Int) throws -> Double {
         guard (1...maximumBatch).contains(slices), values.count >= slices * threadCount else {
-            throw BenchmarkFailure.validationFailed("Bornes des sorties GPU invalides.")
+            throw BenchmarkFailure.validationFailed(Localizer(.english).text("Invalid GPU output bounds."))
         }
         var checksum = 0.0
         for value in values.prefix(slices * threadCount) {
             for lane in 0..<4 {
                 guard value[lane].isFinite else {
-                    throw BenchmarkFailure.validationFailed("Une sortie GPU est non finie ou n’a pas été écrite.")
+                    throw BenchmarkFailure.validationFailed(Localizer(.english).text("A GPU output is non-finite or unwritten."))
                 }
                 checksum += Double(value[lane])
             }
@@ -246,7 +246,7 @@ public enum GPUBenchmark {
                     let actual = values[slice * threadCount + index][lane]
                     let tolerance = max(Float(0.0005), abs(expected[lane]) * 0.00005)
                     guard abs(actual - expected[lane]) <= tolerance else {
-                        throw BenchmarkFailure.validationFailed("Résultat GPU incorrect dans la tranche \(slice), point \(index), composante \(lane).")
+                        throw BenchmarkFailure.validationFailed(Localizer(.english).text("Incorrect GPU result in slice {v0}, position {v1}, component {v2}.", values: ["v0": String(describing: slice), "v1": String(describing: index), "v2": String(describing: lane)]))
                     }
                 }
             }
@@ -262,7 +262,7 @@ public enum GPUBenchmark {
         let owner = Bundle.main.bundleURL.pathExtension.lowercased() == "app"
             ? Bundle.main : Bundle(for: ResourceOwner.self)
         guard let resources = owner.resourceURL else {
-            throw BenchmarkFailure.unavailable("Les ressources propres au module sont introuvables.")
+            throw BenchmarkFailure.unavailable(Localizer(.english).text("The module's own resources could not be found."))
         }
         let shader = resources.appendingPathComponent(defaultBundleName, isDirectory: true)
             .appendingPathComponent("Contents/Resources/Shaders/Compute.metal")
@@ -273,57 +273,57 @@ public enum GPUBenchmark {
     /// for resource-boundary tests; production supplies only the fixed URL above.
     static func readVerifiedShader(at url: URL, containedIn owner: URL) throws -> String {
         guard owner.isFileURL, url.isFileURL else {
-            throw BenchmarkFailure.unavailable("Les ressources Metal doivent être des fichiers du bundle propre.")
+            throw BenchmarkFailure.unavailable(Localizer(.english).text("Metal resources must be files inside the own bundle."))
         }
         let root = owner.standardizedFileURL
         let target = url.standardizedFileURL
         let prefix = root.path.hasSuffix("/") ? root.path : root.path + "/"
         guard root.isFileURL, target.isFileURL, !root.path.utf8.contains(0),
               !target.path.utf8.contains(0), target.path.hasPrefix(prefix) else {
-            throw BenchmarkFailure.unavailable("La source Metal doit appartenir au bundle de l’application.")
+            throw BenchmarkFailure.unavailable(Localizer(.english).text("The Metal source must belong to the app bundle."))
         }
         let components = String(target.path.dropFirst(prefix.count)).split(separator: "/").map(String.init)
         guard !components.isEmpty, components.allSatisfy({ $0 != "." && $0 != ".." && !$0.isEmpty }) else {
-            throw BenchmarkFailure.unavailable("Chemin de ressource Metal invalide.")
+            throw BenchmarkFailure.unavailable(Localizer(.english).text("Invalid Metal resource path."))
         }
         var directory = Darwin.open(root.path, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK)
-        guard directory >= 0 else { throw BenchmarkFailure.unavailable("Le bundle de ressources Metal est inaccessible.") }
+        guard directory >= 0 else { throw BenchmarkFailure.unavailable(Localizer(.english).text("The Metal resource bundle is inaccessible.")) }
         defer { _ = Darwin.close(directory) }
         for component in components.dropLast() {
             let next = component.withCString { Darwin.openat(directory, $0, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK) }
-            guard next >= 0 else { throw BenchmarkFailure.unavailable("Une ressource Metal est inaccessible ou contient un lien symbolique.") }
+            guard next >= 0 else { throw BenchmarkFailure.unavailable(Localizer(.english).text("A Metal resource is inaccessible or contains a symbolic link.")) }
             _ = Darwin.close(directory)
             directory = next
         }
         let descriptor = components[components.count - 1].withCString {
             Darwin.openat(directory, $0, O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK)
         }
-        guard descriptor >= 0 else { throw BenchmarkFailure.unavailable("La source Metal embarquée est inaccessible.") }
+        guard descriptor >= 0 else { throw BenchmarkFailure.unavailable(Localizer(.english).text("The embedded Metal source is inaccessible.")) }
         defer { _ = Darwin.close(descriptor) }
         var info = stat()
         guard Darwin.fstat(descriptor, &info) == 0, (info.st_mode & mode_t(S_IFMT)) == mode_t(S_IFREG),
               info.st_size > 0, info.st_size <= 16_384 else {
-            throw BenchmarkFailure.unavailable("La source Metal doit être un fichier ordinaire de taille bornée.")
+            throw BenchmarkFailure.unavailable(Localizer(.english).text("The Metal source must be a bounded regular file."))
         }
         var bytes = [UInt8](repeating: 0, count: Int(info.st_size))
         try bytes.withUnsafeMutableBytes { buffer in
-            guard let base = buffer.baseAddress else { throw BenchmarkFailure.unavailable("Source Metal vide.") }
+            guard let base = buffer.baseAddress else { throw BenchmarkFailure.unavailable(Localizer(.english).text("Empty Metal source.")) }
             var offset = 0
             while offset < buffer.count {
                 let count = Darwin.read(descriptor, base.advanced(by: offset), buffer.count - offset)
                 if count < 0, errno == EINTR { continue }
-                guard count > 0 else { throw BenchmarkFailure.unavailable("Lecture incomplète de la source Metal.") }
+                guard count > 0 else { throw BenchmarkFailure.unavailable(Localizer(.english).text("Incomplete Metal source read.")) }
                 offset += count
             }
         }
         var extra: UInt8 = 0
         var trailing: Int
         repeat { trailing = Darwin.read(descriptor, &extra, 1) } while trailing < 0 && errno == EINTR
-        guard trailing == 0 else { throw BenchmarkFailure.unavailable("La source Metal a changé pendant sa lecture.") }
+        guard trailing == 0 else { throw BenchmarkFailure.unavailable(Localizer(.english).text("The Metal source changed while being read.")) }
         let data = Data(bytes)
         let digest = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
         guard digest == expectedShaderSHA256, let source = String(data: data, encoding: .utf8) else {
-            throw BenchmarkFailure.unavailable("L’empreinte de la source Metal ne correspond pas à cette version du benchmark.")
+            throw BenchmarkFailure.unavailable(Localizer(.english).text("The Metal source fingerprint does not match this benchmark version."))
         }
         return source
     }

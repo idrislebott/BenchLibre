@@ -1,113 +1,124 @@
 # BenchLibre
 
-Benchmark natif open source pour **macOS 14 ou ultérieur**, écrit en Swift 6, C et Metal. La version **0.3.0** utilise la charge **`benchlibre-suite-v3`** et conserve six mesures dans leurs unités réelles :
+[Français](README.fr.md)
 
-| Test | Mesure | Charge |
+An open source, native benchmark for **macOS 14 or later**, written in Swift 6, C and Metal. Version **0.3.2** uses **`benchlibre-suite-v3`** and reports six measurements in their actual units. There is no combined score.
+
+| Test | Display unit | Workload |
 | --- | --- | --- |
-| CPU | GFLOP/s | 8 chaînes FP32 de 4 voies par worker |
-| GPU Metal | GFLOP/s | 536 870 912 FLOP par dispatch, dimensions fixes |
-| Mémoire | Go/s | Triade mono-thread sur 3 × 64 Mio : `A = B + 3 × C` |
-| Latence mémoire | ns/accès | Cycle d’indices dépendants dans 64 Mio ; plus bas est meilleur |
-| Lecture fichier | Go/s | Fichier de 64 Mio avec `F_NOCACHE` |
-| Écriture fichier | Go/s | Réécriture du fichier de 64 Mio, `fsync` compris |
+| CPU | GFLOP/s | Eight FP32 chains of four lanes per worker |
+| Metal GPU | GFLOP/s | 536,870,912 FLOP per dispatch, fixed dimensions |
+| Memory transfers | GB/s | Single-worker triad over 3 × 64 MiB: `A = B + 3 × C` |
+| Memory access time | ns/access | Dependent-index cycle through 64 MiB; lower is better |
+| File reading | GB/s | Sequential reads from a 64 MiB file with `F_NOCACHE` |
+| File writing | GB/s | Sequential writes to the file, including `fsync` |
 
-CPU, GPU, mémoire et latence sont sélectionnés par défaut. Les E/S fichier s’activent explicitement. Il n’existe pas de score global.
+CPU, GPU, memory transfers and memory access time are selected by default. File tests are optional. GB/s uses decimal bytes; temporary-file sizes use binary MiB.
 
-## Utiliser l’application
+## Language
 
-Ouvrir **BenchLibre.app**, choisir les tests, la durée et **1, 3 ou 5 passages** — 3 par défaut — puis lancer la session. L’arrêt annule la session sans enregistrer un rapport incomplet. Le menu **Données pour les nerds** affiche le détail du protocole.
+**English is the default**, including on a Mac configured in French. Select **Français** using **Language** at the bottom of the sidebar, the Language menu, or application settings. The choice is saved for BenchLibre and the interface updates immediately. System-provided menus and dialogs may require reopening the app. Numbers and dates follow the selected language.
 
-La valeur affichée est celle du passage médian réel : son travail, sa durée, son checksum et ses échantillons restent associés. Le rapport JSON conserve aussi tous les passages, leur dispersion et les conditions observées du Mac. Avec un seul passage, l’écart-type et le coefficient de variation restent absents.
+Reports retain the human-readable text recorded when they were created. Historical text is labeled **Original report text**. JSON identifiers, canonical units and condition values remain compatible with earlier reports. See [localization](docs/LOCALIZATION.md) for resource and formatting details.
 
-Trois durées cibles sont proposées, pour **chaque passage et chaque test** :
+## Understand your results
 
-- **Rapide** : 2,5 secondes, pour vérifier le fonctionnement.
-- **Standard** : 10 secondes.
-- **Endurance** : 30 secondes.
+Each card gives a familiar name, a description of the measured work, an expanded unit and an explanation under **Understand this result**. Higher throughput means more work per second; lower memory access time means less waiting in that workload.
 
-La préparation, la calibration, l’échauffement et la validation ajoutent du temps. Les tests fichier peuvent finir plus tôt lorsqu’ils atteignent leur budget d’octets.
+When a compatible earlier session exists, cards describe the observed change in words and as a percentage. The reference must have the same hardware configuration, workload, measured tests, settings and calculation metadata. Differences in macOS version, power and thermal conditions are flagged. Reference selection runs off the interface thread.
 
-Le bouton **Copie JSON** crée un fichier dans le dossier **Exports du conteneur**, puis le révèle dans Finder. Vous pouvez ensuite le copier manuellement. L’application n’a pas de droit d’écriture dans un dossier externe choisi par l’utilisateur.
+Your first session becomes a starting point. These explanations do not assign a health grade, global ranking or game FPS prediction. Technical details and raw results remain available.
 
-## Stockage et confinement
+## Use the application
 
-L’application utilise **App Sandbox** et **Hardened Runtime**. Elle vérifie sa propre signature au démarrage et refuse les droits supplémentaires à ceux de sa politique. Aucun accès réseau, script, exécution de commande shell, service privilégié ou demande de mot de passe administrateur n’est nécessaire.
+Open **BenchLibre.app**, select tests, duration and **1, 3 or 5 passes** (three by default), then start the session. Stopping cancels the session without saving an incomplete report. **Nerd details** shows protocol and measurement metadata.
 
-Les données sont dérivées du dossier Application Support fourni par Foundation dans le conteneur macOS :
+The displayed value is the actual median pass, retaining its associated work count, timing, checksum and samples. JSON includes all passes, variation and observed conditions. Standard deviation and coefficient of variation are absent for a single pass.
 
-- **Reports** : historique des rapports validés.
-- **Exports** : copies JSON créées à votre demande.
-- **Temporary** : fichiers temporaires des tests de stockage, supprimés en fin de passage.
+The target duration applies to **each pass of each test**:
 
-Avec l’identifiant actuel, ce dossier se trouve normalement dans `~/Library/Containers/org.benchlibre.mac/Data/Library/Application Support/BenchLibre`. Le mode de diagnostic décrit plus bas affiche les chemins réellement fournis par le système. L’application lit aussi ses ressources signées et utilise les frameworks système.
+- **Quick**: 2.5 seconds, useful for checking operation.
+- **Standard**: 10 seconds.
+- **Extended**: 30 seconds.
 
-L’ancien historique de la version 0.2, situé hors du conteneur, **n’est pas importé automatiquement**. Les anciens fichiers ne sont pas supprimés. Après la création du conteneur par le premier lancement, vous pouvez copier vous-même des rapports compatibles dans son dossier Reports avec Finder. Leur lecture applique les contrôles de taille et de cohérence.
+Preparation, calibration, warm-up and validation add time. File tests can finish earlier when they reach their byte budget. A short validation run is not a performance reference.
 
-Les accès aux rapports sont bornés ; les liens symboliques, fichiers spéciaux et fichiers à plusieurs liens physiques sont refusés. Cela ne constitue pas une protection contre un système compromis ou un autre processus déjà autorisé à modifier le conteneur.
+**Export results** creates a copy in **Exports inside the application container** and reveals it in Finder. You can copy it manually. The app has no user-selected external-file entitlement.
 
-## E/S fichier
+## Storage and security
 
-Chaque passage utilise un fichier privé de **64 Mio**, sur le volume du conteneur de l’application, et écrit **64 Mio de préparation** hors chronométrage. Il transfère ensuite au maximum **512 Mio mesurés en écriture** ou **64 Gio mesurés en lecture**. Plusieurs passages multiplient ces E/S.
+BenchLibre requires **App Sandbox** and **Hardened Runtime**, checks its signature at startup and rejects unexpected entitlements. It uses no shell commands, scripts, privileged helpers, administrator password prompts or network connections.
 
-`F_NOCACHE` doit être accepté pour que le test s’exécute. Il désactive le cache de données du descripteur sans certifier le contournement des caches du contrôleur ou du périphérique. Il s’agit d’E/S séquentielles de fichier, sans accès brut au SSD ni sélection de disque externe.
+Foundation supplies the container's Application Support directory:
 
-## Construire avec Xcode
+- **Reports**: validated local history.
+- **Exports**: JSON copies explicitly requested by the user.
+- **Temporary**: private file-test data removed at the end of each pass.
 
-Prérequis : **Xcode avec Swift 6 et le SDK macOS**, macOS 14 ou ultérieur. Le GPU doit être compatible avec le noyau Metal.
+With the current identifier, the base path is normally `~/Library/Containers/org.benchlibre.mac/Data/Library/Application Support/BenchLibre`. The diagnostic mode reports the actual system-provided paths. The app also reads its signed resources and uses system frameworks.
 
-1. Ouvrir **BenchLibre.xcodeproj** dans Xcode.
-2. Choisir le schéma partagé **BenchLibre** et la destination **My Mac**.
-3. Conserver la configuration **Release** du schéma et lancer **Product → Build**.
-4. Dans le groupe Products de Xcode, révéler **BenchLibre.app** dans Finder, puis ouvrir l’application.
+Version 0.2 history outside the container is not automatically imported or deleted. After first launch creates the container, you can copy compatible reports into Reports using Finder. Size and consistency checks apply on load. Report access is bounded and rejects symbolic links, special files and files with multiple hard links. This does not protect a compromised operating system or another process already authorized to modify the container.
 
-La cible Xcode assemble les ressources et applique le sandbox et Hardened Runtime sans phase de script. Sa signature locale ad hoc ne demande pas de compte développeur. Le schéma lance Release sans débogueur et sans droit `get-task-allow`. Les paramètres de sécurité ne doivent pas être assouplis pour contourner un problème de construction.
+## File I/O
 
-Laisser les produits de compilation dans le dossier DerivedData local de Xcode : certains dossiers synchronisés peuvent ajouter des métadonnées incompatibles avec la vérification stricte d’une signature.
+Each pass creates a private **64 MiB** file on the container's volume and performs **64 MiB of preparation writes** outside timing. Measured transfers are capped at **512 MiB for writing** or **64 GiB for reading** per pass. Repeated passes multiply this I/O.
 
-**Package.swift décrit uniquement la bibliothèque BenchCore, ses noyaux C et ses tests.** Il ne produit pas l’application signée. Pour développer la bibliothèque, ouvrir le package dans Xcode et exécuter ses tests avec **Product → Test**. La réussite des tests ne remplace pas une mesure Release sur le matériel cible ; les tests Metal peuvent être ignorés en l’absence de GPU utilisable.
+`F_NOCACHE` must succeed. It disables descriptor data caching without certifying bypass of device or controller caches. These are sequential file tests, without raw SSD access or external-disk selection.
 
-Une compilation Debug sert au développement et ses mesures ne sont pas comparables à celles de Release. Une compilation instrumentée par un analyseur mémoire ne sert pas non plus de référence de performance.
+## Build with Xcode
 
-## Modes sans interface
+Requirements: **Xcode with Swift 6 and the macOS SDK**, macOS 14 or later, and a GPU supporting the Metal kernel.
 
-L’exécutable contenu dans l’application signée conserve des modes de diagnostic et de mesure. Ils peuvent être configurés comme arguments de lancement dans **Product → Scheme → Edit Scheme → Run → Arguments**, sans script ni commande shell :
+1. Open **BenchLibre.xcodeproj** in Xcode.
+2. Select the shared **BenchLibre** scheme and **My Mac** destination.
+3. Keep the scheme's **Release** configuration and choose **Product → Build**.
+4. Reveal **BenchLibre.app** from Xcode's Products group in Finder and open it.
 
-| Argument | Fonction |
+The target assembles resources and applies sandboxing and Hardened Runtime without a script phase. Local ad hoc signing does not require a developer account. The scheme launches Release without a debugger or `get-task-allow`. Keep build products in local Xcode DerivedData; synchronized folders can attach metadata that invalidates strict signature verification. Do not relax security settings to bypass build errors.
+
+**Package.swift builds only BenchCore, C kernels and tests**, not the signed application. Open the package in Xcode and choose **Product → Test** for library development. Tests do not replace Release measurements on target hardware; Metal tests may skip without a usable GPU. Debug and memory-instrumented builds are not performance references.
+
+## Headless modes
+
+The executable inside the signed app accepts launch arguments, configurable in **Product → Scheme → Edit Scheme → Run → Arguments** without shell scripts:
+
+| Argument | Purpose |
 | --- | --- |
-| `--info` | Métadonnées matérielles en JSON, sans benchmark |
-| `--security-info` | Politique de signature et chemins du conteneur |
-| `--smoke` | Vérification courte : 0,25 s, un passage, au plus deux workers CPU |
-| `--cli` | Session sans interface, mêmes valeurs par défaut que l’application |
-| `--seconds N` | Durée cible par passage entre 0,1 et 120 s |
-| `--repetitions N` | 1, 3 ou 5 passages |
-| `--threads N` | Nombre de workers CPU |
-| `--tests LIST` | Liste séparée par virgules ou `all` |
-| `--output NOM.json` | Copie dans Exports du conteneur, sans chemin externe |
+| `--info` | Hardware metadata as JSON, without a benchmark |
+| `--security-info` | Signature policy and container paths |
+| `--smoke` | 0.25-second validation, one pass, at most two CPU workers |
+| `--cli` | Headless session with the app's default measurement settings |
+| `--seconds N` | Target duration per pass, 0.1 to 120 seconds |
+| `--repetitions N` | 1, 3 or 5 passes |
+| `--threads N` | CPU worker count |
+| `--tests LIST` | Comma-separated test identifiers, or `all` |
+| `--language en` / `--language fr` | Message language; English by default, independent of saved GUI preference |
+| `--output NAME.json` | JSON copy in container Exports, with no external path |
 
-La liste des tests accepte `cpu,gpu,memory,latency,disk-read,disk-write`. `all` inclut les E/S. Sans sélection, les quatre premiers sont utilisés. Sans `--output`, le rapport est écrit sur la sortie standard. Le nom d’export accepte seulement lettres ASCII, chiffres, tirets, points et soulignements ; les chemins absolus et relatifs vers un autre dossier sont rejetés avant le calcul.
+Tests accept `cpu,gpu,memory,latency,disk-read,disk-write`; `all` includes file I/O. Without a selection, the first four are used. Without `--output`, JSON goes to standard output. Export names allow only ASCII letters, digits, hyphens, dots and underscores; external paths are rejected before computation.
 
-Le mode `--smoke` vérifie l’exécution et les contrôles numériques ; il ne fournit pas un score de référence.
+## Compare and interpret
 
-## Comparer et interpréter
+Use the same workload version, Release build, settings and similar conditions: power source, energy mode, competing apps and thermal state. Do not automatically combine suite-v2 and suite-v3: timing windows and GPU output handling changed. Version 0.3.2 localization does not change suite-v3 kernels or counted work.
 
-Conserver la même version de charge, la même compilation Release, les mêmes réglages et des conditions proches : alimentation, mode d’énergie, applications concurrentes et état thermique. Les résultats de `benchlibre-suite-v2` et `benchlibre-suite-v3` ne doivent pas être regroupés automatiquement : les fenêtres mesurées et la gestion des sorties GPU ont changé.
+FP32 compute does not measure game FPS, ray tracing or a 3D engine. The triad counts logical bytes rather than physical DRAM traffic. Memory access time includes the cache hierarchy in a fixed 64 MiB set; 64-byte slots do not claim to reproduce every processor's cache-line size.
 
-Le calcul FP32 ne mesure pas les FPS d’un jeu, le ray tracing ou un moteur 3D. La triade compte les octets logiques, pas le trafic physique de DRAM. La latence traverse la hiérarchie mémoire dans un ensemble fixe de 64 Mio ; les emplacements de 64 octets ne prétendent pas reproduire les lignes de cache de chaque processeur.
+macOS schedules workers across Performance and Efficiency cores. Sustained work does not certify 100% hardware occupancy. Power, Low Power Mode and thermal conditions are observed about once per second and can miss brief events. Thermal state is not a temperature in °C or proof that throttling did not occur.
 
-macOS choisit l’affectation des workers aux cœurs Performance et Efficacité. Une charge soutenue ne garantit pas une occupation matérielle de 100 %. Le journal d’alimentation, du mode économie d’énergie et de l’état thermique est échantillonné environ une fois par seconde. Il peut manquer un événement bref ; l’état thermique n’est pas une température en °C ni une preuve d’absence de bridage.
+Numerical and structural validation checks local consistency. It does not certify the authenticity of a shared score, a remote computer or exhaustive hardware stability. 3D rendering, ray tracing, NPU tests, advanced sensors and a worldwide ranking remain future work.
 
-Les validations numériques et structurelles contrôlent la cohérence locale. Elles ne certifient pas l’authenticité d’un score partagé, l’intégrité d’un ordinateur distant ou la stabilité exhaustive du matériel. Le rendu 3D, le ray tracing, le NPU, les capteurs avancés et un classement mondial restent des évolutions futures.
+## Distribution, privacy and license
 
-## Distribution, données et licence
+The local build is signed **ad hoc**, without Developer ID or Apple notarization. Public distribution recognized by Gatekeeper still requires Developer ID signing and notarization. A developer-identity warning differs from a malware detection. No absence of XProtect or VirusTotal false positives is guaranteed; nothing is automatically submitted to those services.
 
-La version locale est signée **ad hoc**, sans signature Developer ID ni notarisation Apple. Pour une distribution publique reconnue par Gatekeeper, une procédure Developer ID et notarisation reste nécessaire. Un avertissement Gatekeeper sur l’identité du développeur n’est pas une détection de malware. Aucune absence de faux positif XProtect ou VirusTotal n’est garantie ; aucun envoi automatique à ces services n’est effectué.
+BenchLibre collects no telemetry, uploads no reports and needs no account. JSON sharing is manual. There are **no external third-party dependencies**; project code uses the [MIT license](LICENSE). Apple frameworks retain their own license terms.
 
-BenchLibre ne collecte pas de télémétrie, ne téléverse aucun rapport et ne nécessite pas de compte. Le partage d’un JSON est manuel. Aucune dépendance tierce externe n’est intégrée ; le code propre au projet est sous [licence MIT](LICENSE). Les frameworks Apple conservent leurs propres conditions de licence.
+- [Protocol (French)](docs/PROTOCOL.md)
+- [Dependency and license inventory (French)](docs/DEPENDENCIES.md)
+- [Localization](docs/LOCALIZATION.md)
+- [Validation record (French)](docs/VALIDATION.md)
+- [Core engines](Sources/BenchCore)
+- [C kernels](Sources/BenchKernels)
+- [macOS application](Sources/BenchLibre)
 
-- [Protocole détaillé](docs/PROTOCOL.md)
-- [Inventaire des dépendances et licences](docs/DEPENDENCIES.md)
-- [Sources des moteurs](Sources/BenchCore)
-- [Noyaux C](Sources/BenchKernels)
-- [Application macOS](Sources/BenchLibre)
-
-La licence MIT permet l’étude, la modification et la redistribution du code. Ce dossier n’a pas été publié automatiquement sur Internet.
+The MIT license permits study, modification and redistribution. New local changes are not automatically published online.

@@ -336,6 +336,7 @@
 			"hasScannedForEncodings" = 0;
 			"knownRegions" = (
 				"en",
+				"fr",
 				"Base",
 			);
 			"mainGroup" = "66474652908ED2E0775E04A9";

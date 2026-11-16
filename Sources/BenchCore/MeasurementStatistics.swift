@@ -30,7 +30,7 @@ public struct MeasurementSummary: Codable, Sendable, Identifiable {
 public enum MeasurementStatistics {
     public static func summarize(kind: BenchmarkKind, values: [Double]) throws -> MeasurementSummary {
         guard !values.isEmpty, values.allSatisfy({ $0.isFinite && $0 > 0 }) else {
-            throw BenchmarkFailure.validationFailed("Les passages doivent contenir des mesures finies et strictement positives.")
+            throw BenchmarkFailure.validationFailed(Localizer(.english).text("Passes must contain finite, strictly positive measurements."))
         }
         let sorted = values.sorted()
         let count = sorted.count
@@ -62,7 +62,7 @@ public enum MeasurementStatistics {
             let scaledDeviation = deviation * scale
             let coefficient = deviation / mean * 100
             guard scaledDeviation.isFinite, coefficient.isFinite else {
-                throw BenchmarkFailure.validationFailed("La dispersion des passages ne peut pas être représentée.")
+                throw BenchmarkFailure.validationFailed(Localizer(.english).text("The pass dispersion cannot be represented."))
             }
             standardDeviation = scaledDeviation
             variation = coefficient

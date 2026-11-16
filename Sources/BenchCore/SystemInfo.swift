@@ -13,6 +13,15 @@ public enum SystemInfo {
         return String(decoding: bytes[..<end], as: UTF8.self)
     }
 
+    /// Stable metadata: Apple's operatingSystemVersionString is localized.
+    /// Read the numeric version and public kernel build identifier instead.
+    static var operatingSystemDescription: String {
+        let version = ProcessInfo.processInfo.operatingSystemVersion
+        let number = "\(version.majorVersion).\(version.minorVersion).\(version.patchVersion)"
+        let build = sysctlString("kern.osversion")
+        return build.isEmpty ? "Version \(number)" : "Version \(number) (Build \(build))"
+    }
+
     public static func capture() -> HardwareSummary {
         let rawChip = sysctlString("machdep.cpu.brand_string")
         let gpu = MTLCreateSystemDefaultDevice()?.name ?? "Metal indisponible"
@@ -32,7 +41,7 @@ public enum SystemInfo {
                                chip: rawChip.isEmpty ? gpu : rawChip,
                                gpu: gpu, memoryBytes: ProcessInfo.processInfo.physicalMemory,
                                logicalCores: ProcessInfo.processInfo.activeProcessorCount,
-                               operatingSystem: ProcessInfo.processInfo.operatingSystemVersionString,
+                               operatingSystem: operatingSystemDescription,
                                architecture: architecture, powerSource: power)
     }
 

@@ -28,7 +28,7 @@ public enum CPUMemoryBenchmarks {
 
     private static func validateDuration(_ duration: Double) throws {
         guard duration.isFinite, duration >= 0.1, duration <= 120 else {
-            throw BenchmarkFailure.invalidConfiguration("La durée d’un test doit être comprise entre 0,1 et 120 secondes.")
+            throw BenchmarkFailure.invalidConfiguration(Localizer(.english).text("A test must last between 0.1 and 120 seconds."))
         }
     }
     private static func nanoseconds() -> UInt64 { DispatchTime.now().uptimeNanoseconds }
@@ -42,16 +42,16 @@ public enum CPUMemoryBenchmarks {
         duration: Double,
         threads: Int,
         cancellation: CancellationToken,
-        progress: @escaping EngineProgress
+        language: AppLanguage = .english, progress: @escaping EngineProgress
     ) throws -> MetricResult {
         try validateDuration(duration)
         guard threads >= 1, threads <= 256 else {
-            throw BenchmarkFailure.invalidConfiguration("Le nombre de threads CPU doit être compris entre 1 et 256.")
+            throw BenchmarkFailure.invalidConfiguration(Localizer(language).text("CPU thread count must be between 1 and 256."))
         }
         try cancellation.check()
-        progress(EngineUpdate(fraction: 0, message: "Validation du noyau FP32…"))
+        progress(EngineUpdate(fraction: 0, message: Localizer(language).text("Validating the FP32 kernel…")))
         guard bl_cpu_validate() == 1 else {
-            throw BenchmarkFailure.validationFailed("Le noyau CPU ne correspond pas à sa référence scalaire.")
+            throw BenchmarkFailure.validationFailed(Localizer(language).text("The CPU kernel does not match its scalar reference."))
         }
 
         // Calibrate a short chunk, bounding cancellation latency and excluding
@@ -64,7 +64,7 @@ public enum CPUMemoryBenchmarks {
             let result = bl_cpu_fp32(iterations, 17)
             let elapsed = seconds(start, nanoseconds())
             guard result.checksum.isFinite, result.operations == iterations * 64 else {
-                throw BenchmarkFailure.validationFailed("Le calcul CPU a produit un résultat invalide.")
+                throw BenchmarkFailure.validationFailed(Localizer(language).text("CPU computation produced an invalid result."))
             }
             if elapsed >= 0.006 || iterations == maximumChunk { break }
             let ratio = min(8.0, 0.008 / max(elapsed, 0.000_001))
@@ -79,7 +79,7 @@ public enum CPUMemoryBenchmarks {
         }
         try cancellation.check()
         guard !warmup.snapshot().invalid, warmup.snapshot().operations > 0 else {
-            throw BenchmarkFailure.validationFailed("Échauffement CPU invalide.")
+            throw BenchmarkFailure.validationFailed(Localizer(language).text("Invalid CPU warm-up."))
         }
 
         let accumulator = CPUAccumulator()
@@ -115,7 +115,7 @@ public enum CPUMemoryBenchmarks {
             let elapsed = seconds(start, now)
             let latest = snapshot.operations > 0 ? Double(snapshot.operations) / elapsed / 1_000_000_000 : nil
             progress(EngineUpdate(fraction: min(elapsed / duration, 0.995), value: latest,
-                                  message: "Calcul FP32 sur \(threads) thread\(threads > 1 ? "s" : "")…"))
+                                  message: Localizer(language).text("FP32 compute on {v0} thread{v1}…", values: ["v0": String(describing: threads), "v1": String(describing: threads > 1 ? "s" : "")])))
         }
         // Always join the workers before propagating cancellation.
         try cancellation.check()
@@ -123,7 +123,7 @@ public enum CPUMemoryBenchmarks {
         let end = max(start, snapshot.finishedAt)
         let elapsed = seconds(start, end)
         guard !snapshot.invalid, snapshot.operations > 0, snapshot.checksum.isFinite, elapsed > 0 else {
-            throw BenchmarkFailure.validationFailed("La mesure CPU n’a pas produit de travail vérifiable.")
+            throw BenchmarkFailure.validationFailed(Localizer(language).text("The CPU measurement produced no verifiable work."))
         }
         let value = Double(snapshot.operations) / elapsed / 1_000_000_000
         let lastInterval = end >= previousTime ? seconds(previousTime, end) : 0
@@ -132,11 +132,11 @@ public enum CPUMemoryBenchmarks {
             samples.append(Double(delta) / lastInterval / 1_000_000_000)
         }
         if samples.isEmpty { samples = [value] }
-        progress(EngineUpdate(fraction: 1, value: value, message: "Test CPU terminé."))
+        progress(EngineUpdate(fraction: 1, value: value, message: Localizer(language).text("CPU test complete.")))
         return MetricResult(
             kind: .cpu, value: value, unit: "GFLOP/s", elapsedSeconds: elapsed,
             samples: samples, checksum: snapshot.checksum,
-            details: "FP32 FMA, 8 chaînes SIMD de 4 éléments, 64 FLOP/itération, \(threads) thread\(threads > 1 ? "s" : ""). CPU-FP32-v2. Travail de tous les workers / temps monotone du démarrage au dernier lot réellement achevé ; attente du moniteur et callbacks après ce lot exclus. Résultats d’échauffement consommés. QoS userInitiated ; placement P/E décidé par macOS.",
+            details: Localizer(language).text("FP32 FMA, 8 SIMD chains of 4 lanes, 64 FLOP/iteration, {v0} thread{v1}. CPU-FP32-v2. All workers' work divided by monotonic time from start to the last completed chunk; coordinator wait and later callbacks excluded. Warm-up outputs consumed. QoS userInitiated; macOS chooses P/E placement.", values: ["v0": String(describing: threads), "v1": String(describing: threads > 1 ? "s" : "")]),
             validated: true,
             workAmount: Double(snapshot.operations), workUnit: "FLOP",
             timingSeconds: elapsed, timingSource: "monotonic-wall"
@@ -148,20 +148,20 @@ public enum CPUMemoryBenchmarks {
     public static func runMemory(
         duration: Double,
         cancellation: CancellationToken,
-        progress: @escaping EngineProgress
+        language: AppLanguage = .english, progress: @escaping EngineProgress
     ) throws -> MetricResult {
         try validateDuration(duration)
         try cancellation.check()
-        progress(EngineUpdate(fraction: 0, message: "Préparation de 192 Mio de mémoire…"))
+        progress(EngineUpdate(fraction: 0, message: Localizer(language).text("Preparing 192 MiB of memory…")))
         let floatCount = 16 * 1_024 * 1_024
         guard let buffers = bl_memory_create(floatCount) else {
-            throw BenchmarkFailure.unavailable("Impossible d’allouer les 192 Mio nécessaires au test mémoire.")
+            throw BenchmarkFailure.unavailable(Localizer(language).text("Unable to allocate the 192 MiB required for the memory test."))
         }
         defer { bl_memory_destroy(buffers) }
         try cancellation.check()
         bl_memory_triad(buffers)
         guard bl_memory_validate(buffers) == 1 else {
-            throw BenchmarkFailure.validationFailed("Le noyau mémoire ne correspond pas aux valeurs attendues.")
+            throw BenchmarkFailure.validationFailed(Localizer(language).text("The memory kernel does not match expected values."))
         }
         try cancellation.check()
 
@@ -176,7 +176,7 @@ public enum CPUMemoryBenchmarks {
             let kernelStart = nanoseconds()
             bl_memory_triad(buffers)
             let interval = seconds(kernelStart, nanoseconds())
-            guard interval > 0 else { throw BenchmarkFailure.validationFailed("Horloge mémoire invalide.") }
+            guard interval > 0 else { throw BenchmarkFailure.validationFailed(Localizer(language).text("Invalid memory clock interval.")) }
             passes += 1
             measuredSeconds += interval
             sampleSeconds += interval
@@ -186,7 +186,7 @@ public enum CPUMemoryBenchmarks {
                 sampleSeconds = 0
                 previousPasses = passes
                 progress(EngineUpdate(fraction: min(measuredSeconds / duration, 0.995), value: sample,
-                                      message: "Triade mémoire : deux lectures et une écriture…"))
+                                      message: Localizer(language).text("Memory triad: two reads and one write…")))
             }
         }
         try cancellation.check()
@@ -195,7 +195,7 @@ public enum CPUMemoryBenchmarks {
         let expected = bl_memory_expected_checksum(buffers)
         guard passes > 0, elapsed > 0, checksum.isFinite, checksum == expected,
               bl_memory_validate(buffers) == 1 else {
-            throw BenchmarkFailure.validationFailed("La vérification complète du résultat mémoire a échoué.")
+            throw BenchmarkFailure.validationFailed(Localizer(language).text("Full validation of the memory result failed."))
         }
         let value = Double(passes * bytesPerPass) / elapsed / 1_000_000_000
         let lastInterval = sampleSeconds
@@ -203,11 +203,11 @@ public enum CPUMemoryBenchmarks {
             samples.append(Double((passes - previousPasses) * bytesPerPass) / lastInterval / 1_000_000_000)
         }
         if samples.isEmpty { samples = [value] }
-        progress(EngineUpdate(fraction: 1, value: value, message: "Test mémoire terminé."))
+        progress(EngineUpdate(fraction: 1, value: value, message: Localizer(language).text("Memory test complete.")))
         return MetricResult(
             kind: .memory, value: value, unit: "Go/s", elapsedSeconds: elapsed,
             samples: samples, checksum: checksum,
-            details: "Triade mono-thread A = B + 3 × C, 3 × 64 Mio, \(passes) passages. Débit en Go/s décimaux (octets / 10⁹) : 2 lectures + 1 écriture, soit 12 octets logiques par élément. Le trafic matériel supplémentaire, dont write-allocate, n’est pas compté. Triad-v2 : somme des fenêtres du noyau C (appel inclus) ; callbacks, allocation, premier accès, échauffement et validation exclus.",
+            details: Localizer(language).text("Single-threaded triad A = B + 3 × C, 3 × 64 MiB, {v0} passes. Decimal GB/s (bytes / 10⁹): 2 reads plus 1 write, 12 logical bytes per element. Additional hardware traffic, including write allocation, is not counted. Triad-v2: sum of C kernel windows (call included); callbacks, allocation, first touch, warm-up and validation excluded.", values: ["v0": String(describing: passes)]),
             validated: true,
             workAmount: Double(passes * bytesPerPass), workUnit: "logical-bytes",
             timingSeconds: elapsed, timingSource: "monotonic-kernel-intervals"

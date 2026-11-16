@@ -1,4 +1,4 @@
-# Dépendances et licences — BenchLibre 0.3.0
+# Dépendances et licences — BenchLibre 0.3.2
 
 Inventaire établi à partir de `Package.swift`, du projet Xcode, des imports Swift/C et des ressources du dépôt. L’application utilise les API natives de macOS ; elle ne télécharge aucune dépendance à l’exécution.
 
@@ -45,6 +45,8 @@ Le shader est une ressource locale du package, copiée dans le bundle de l’app
 Empreinte attendue de `Sources/BenchCore/Shaders/Compute.metal` :
 
 `a7dfa6d8eb168939869b17df232fe4b3733efdadb87a04d1dbf1381023ac5041`
+
+Les tables de traduction en/fr sont des ressources MIT locales du package, sans service de traduction distant ni dépendance supplémentaire. Elles sont chargées depuis le bundle embarqué.
 
 L’icône est un fichier local du projet, sans bibliothèque de rendu ou service distant requis à l’exécution.
 

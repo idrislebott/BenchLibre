@@ -4,11 +4,19 @@ import BenchCore
 
 @MainActor
 final class AppModel: ObservableObject {
+    @Published var language = AppLanguage.resolved(UserDefaults.standard.string(forKey: "preferredLanguage")) {
+        didSet {
+            UserDefaults.standard.set(language.rawValue, forKey: "preferredLanguage")
+            UserDefaults.standard.set([language.rawValue], forKey: "AppleLanguages")
+        }
+    }
     @Published var hardware = SystemInfo.capture()
     @Published var reports: [BenchmarkReport] = []
     @Published var exporting = false
     @Published var loadingHistory = true
     @Published var current: BenchmarkReport?
+    @Published private(set) var comparisonReference: BenchmarkReport?
+    @Published private(set) var preparingComparison = false
     @Published var results: [BenchmarkKind: MetricResult] = [:]
     @Published var summaries: [BenchmarkKind: MeasurementSummary] = [:]
     @Published var liveCondition: ConditionSample?
@@ -22,8 +30,36 @@ final class AppModel: ObservableObject {
     @Published var stopping = false
     @Published var fraction = 0.0
     @Published var activeKind: BenchmarkKind?
-    @Published var status = "Prêt pour une nouvelle mesure."
-    @Published var error: String?
+    @Published private var statusKey = "Ready for a new benchmark."
+    @Published private var statusValues: [String: String] = [:]
+    private var statusKind: BenchmarkKind?
+    var status: String {
+        var values = statusValues
+        if let statusKind { values["test"] = statusKind.localizedTitle(language) }
+        if statusKey == "Report from {date}", let current {
+            values["date"] = current.startedAt.formatted(Date.FormatStyle(date: .abbreviated, time: .shortened).locale(language.locale))
+        }
+        return text(statusKey, values)
+    }
+    func text(_ key: String, _ values: [String: String] = [:]) -> String {
+        Localizer(language).text(key, table: .app, values: values)
+    }
+    private func setStatus(_ key: String, _ values: [String: String] = [:], kind: BenchmarkKind? = nil) {
+        statusKind = kind
+        statusValues = values
+        statusKey = key
+    }
+    private struct PresentedFailure { let key: String; let reason: Error }
+    @Published private var presentedFailure: PresentedFailure?
+    var error: String? {
+        get {
+            guard let failure = presentedFailure else { return nil }
+            let reason = (failure.reason as? BenchmarkFailure)?.localizedDescription(in: language)
+                ?? Localizer(language).text(failure.reason.localizedDescription)
+            return text(failure.key, ["reason": reason])
+        }
+        set { if newValue == nil { presentedFailure = nil } }
+    }
     @Published var page = 0
     @Published var showDetails = UserDefaults.standard.bool(forKey: "showBenchmarkDetails") {
         didSet { UserDefaults.standard.set(showDetails, forKey: "showBenchmarkDetails") }
@@ -47,7 +83,7 @@ final class AppModel: ObservableObject {
     }
 
     func start() {
-        guard !running, !exporting, !loadingHistory, !enabled.isEmpty else { return }
+        guard !running, !exporting, !loadingHistory, !preparingComparison, !enabled.isEmpty else { return }
         let config = BenchmarkConfiguration(secondsPerTest: durations[preset], threads: threads,
                                             enabled: BenchmarkKind.allCases.filter { enabled.contains($0) }, repetitions: repetitions)
         let cancellation = CancellationToken()
@@ -56,15 +92,17 @@ final class AppModel: ObservableObject {
         token = cancellation
         running = true; stopping = false; fraction = 0; activeKind = nil
         current = nil; results = [:]; liveValues = [:]; liveSamples = [:]; page = 0
+        comparisonReference = nil
         summaries = [:]; liveCondition = nil
-        status = "Préparation des mesures…"
+        setStatus("Preparing measurements…")
+        let runLanguage = language
         task = Task.detached(priority: .userInitiated) { [self] in
             do {
-                let report = try BenchmarkRunner.run(configuration: config, cancellation: cancellation) { [self] update in
+                let report = try BenchmarkRunner.run(configuration: config, cancellation: cancellation, language: runLanguage) { [self] update in
                     Task { @MainActor [self] in
                         guard self.running, !self.stopping, self.currentRunID == runID else { return }
                         self.activeKind = update.kind; self.fraction = max(self.fraction, update.overallFraction)
-                        self.status = update.message
+                        self.setStatus("Benchmarking {test} — pass {pass}/{total}", ["pass": String(update.iteration), "total": String(update.repetitions)], kind: update.kind)
                         self.liveCondition = update.condition
                         if let value = update.value, value.isFinite, value > 0 {
                             self.liveValues[update.kind] = value
@@ -83,21 +121,23 @@ final class AppModel: ObservableObject {
 
     func stop() {
         guard running, !stopping else { return }
-        stopping = true; status = "Arrêt du test…"; token?.cancel()
+        stopping = true; setStatus("Stopping the test…"); token?.cancel()
     }
 
     private func finish(_ report: BenchmarkReport) async {
-        stopping = true; token = nil; status = "Enregistrement du rapport…"
+        stopping = true; token = nil; setStatus("Saving the report…")
         do {
-            let loaded = try await Task.detached(priority: .utility) {
+            let (loaded, reference) = try await Task.detached(priority: .utility) {
                 try ReportStore.save(report)
-                return ReportStore.load()
+                let loaded = ReportStore.load()
+                return (loaded, PersonalComparison.reference(for: report, in: loaded))
             }.value
             reports = loaded
-            status = "Session terminée · rapport enregistré dans le conteneur."
+            comparisonReference = reference
+            setStatus("Session complete · report saved in the app container.")
         } catch {
-            status = "Mesure terminée · rapport conservé dans cette fenêtre."
-            self.error = "Le rapport n’a pas pu être enregistré : \(error.localizedDescription)"
+            setStatus("Measurement complete · report retained in this window.")
+            self.presentedFailure = PresentedFailure(key: "The report could not be saved: {reason}", reason: error)
         }
         currentRunID = nil
         task = nil
@@ -114,20 +154,31 @@ final class AppModel: ObservableObject {
         task = nil
         running = false; stopping = false; activeKind = nil; token = nil
         if case BenchmarkFailure.cancelled = failure {
-            status = "Session arrêtée · aucun rapport ajouté."
+            setStatus("Session stopped · no report added.")
         } else {
-            status = "La session n’a pas pu se terminer."
-            error = failure.localizedDescription
+            setStatus("The session could not finish.")
+            presentedFailure = PresentedFailure(key: "Benchmark failed: {reason}", reason: failure)
         }
     }
 
     func select(_ report: BenchmarkReport) {
-        guard !running else { return }
+        guard !running, !preparingComparison else { return }
+        comparisonReference = nil
+        preparingComparison = true
         current = report; results = Dictionary(report.results.map { ($0.kind, $0) }, uniquingKeysWith: { first, _ in first })
         summaries = Dictionary((report.summaries ?? []).map { ($0.kind, $0) }, uniquingKeysWith: { first, _ in first })
         liveCondition = report.conditions?.last
         liveValues = [:]; liveSamples = [:]; page = 0; fraction = 1
-        status = "Rapport du \(report.startedAt.formatted(date: .abbreviated, time: .shortened))"
+        setStatus("Report from {date}")
+        let history = reports
+        Task { [weak self] in
+            let reference = await Task.detached(priority: .utility) {
+                PersonalComparison.reference(for: report, in: history)
+            }.value
+            guard let self, self.current?.id == report.id else { return }
+            self.comparisonReference = reference
+            self.preparingComparison = false
+        }
     }
 
     func exportReport() {
@@ -137,9 +188,9 @@ final class AppModel: ObservableObject {
             defer { self?.exporting = false }
             do {
                 let url = try await Task.detached(priority: .utility) { try ReportStore.export(current) }.value
-                self?.status = "Copie JSON enregistrée dans Exports, à l’intérieur du conteneur."
+                self?.setStatus("JSON copy saved in Exports, inside the app container.")
                 NSWorkspace.shared.activateFileViewerSelecting([url])
-            } catch { self?.error = "Copie JSON impossible : \(error.localizedDescription)" }
+            } catch { self?.presentedFailure = PresentedFailure(key: "Unable to export JSON: {reason}", reason: error) }
         }
     }
 

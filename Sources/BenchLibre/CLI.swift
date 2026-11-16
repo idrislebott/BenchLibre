@@ -7,39 +7,38 @@ enum CLI {
         let args = Array(CommandLine.arguments.dropFirst())
         let modes: Set<String> = ["--cli", "--smoke", "--info", "--help", "--security-info"]
         guard args.contains(where: modes.contains) else { return }
+        // CLI language is explicit and never changes the GUI's saved preference.
+        var language = AppLanguage.english
+        if let index = args.firstIndex(of: "--language"), index + 1 < args.count {
+            language = AppLanguage.resolved(args[index + 1])
+        }
+        func text(_ key: String, _ values: [String: String] = [:]) -> String {
+            Localizer(language).text(key, table: .app, values: values)
+        }
         do {
-            let valued: Set<String> = ["--seconds", "--threads", "--tests", "--repetitions", "--output"]
+            let valued: Set<String> = ["--seconds", "--threads", "--tests", "--repetitions", "--output", "--language"]
             var options: [String: String] = [:]
             var switches: Set<String> = []
             var index = 0
             while index < args.count {
                 let flag = args[index]
                 guard options[flag] == nil, !switches.contains(flag) else {
-                    throw BenchmarkFailure.invalidConfiguration("Option répétée : \(flag)")
+                    throw BenchmarkFailure.invalidConfiguration(text("Repeated option: {flag}", ["flag": flag]))
                 }
                 if modes.contains(flag) { switches.insert(flag); index += 1; continue }
-                guard valued.contains(flag) else { throw BenchmarkFailure.invalidConfiguration("Option inconnue : \(flag)") }
+                guard valued.contains(flag) else { throw BenchmarkFailure.invalidConfiguration(text("Unknown option: {flag}", ["flag": flag])) }
                 guard index + 1 < args.count, !args[index + 1].hasPrefix("--"), !args[index + 1].isEmpty else {
-                    throw BenchmarkFailure.invalidConfiguration("Valeur manquante pour \(flag).")
+                    throw BenchmarkFailure.invalidConfiguration(text("Missing value for {flag}.", ["flag": flag]))
                 }
                 options[flag] = args[index + 1]
                 index += 2
             }
+            if let value = options["--language"], AppLanguage(rawValue: value) == nil {
+                throw BenchmarkFailure.invalidConfiguration(text("Language must be en or fr."))
+            }
             if switches.contains("--help") {
-                print("""
-                BenchLibre \(BenchmarkRunner.applicationVersion)
-                --info                    Configuration du Mac en JSON
-                --cli                     Session de mesure (10 s, 3 passages par défaut)
-                --smoke                   Vérification courte (0,25 s, 1 passage)
-                --seconds N               Durée cible par passage (0,1 à 120 s)
-                --repetitions N           1, 3 ou 5 passages par test
-                --threads N               Nombre de threads CPU
-                --tests LIST              cpu,gpu,memory,latency,disk-read,disk-write ou all
-                --output NAME.json        Copie JSON dans Exports du conteneur (aucun chemin externe)
-                --security-info           Confinement et chemins natifs du conteneur
-                Les tests disque sont optionnels. Écriture : 512 Mio mesurés maximum
-                et 64 Mio de préparation par passage, dans un fichier temporaire.
-                """)
+                print("BenchLibre \(BenchmarkRunner.applicationVersion)")
+                print(text("CLI help"))
                 exit(0)
             }
             if switches.contains("--security-info") {
@@ -54,12 +53,12 @@ enum CLI {
             let smoke = switches.contains("--smoke")
             func doubleOption(_ flag: String, fallback: Double) throws -> Double {
                 guard let raw = options[flag] else { return fallback }
-                guard let value = Double(raw) else { throw BenchmarkFailure.invalidConfiguration("\(flag) attend un nombre.") }
+                guard let value = Double(raw) else { throw BenchmarkFailure.invalidConfiguration(text("{flag} requires a number.", ["flag": flag])) }
                 return value
             }
             func intOption(_ flag: String, fallback: Int) throws -> Int {
                 guard let raw = options[flag] else { return fallback }
-                guard let value = Int(raw) else { throw BenchmarkFailure.invalidConfiguration("\(flag) attend un entier.") }
+                guard let value = Int(raw) else { throw BenchmarkFailure.invalidConfiguration(text("{flag} requires an integer.", ["flag": flag])) }
                 return value
             }
             let seconds = try doubleOption("--seconds", fallback: smoke ? 0.25 : 10)
@@ -72,22 +71,23 @@ enum CLI {
                     kinds = try raw.split(separator: ",", omittingEmptySubsequences: false).map { component in
                         let value = component.trimmingCharacters(in: .whitespaces)
                         guard let kind = BenchmarkKind(rawValue: value) else {
-                            throw BenchmarkFailure.invalidConfiguration("Test inconnu : \(value)")
+                            throw BenchmarkFailure.invalidConfiguration(text("Unknown test: {test}", ["test": value]))
                         }
                         return kind
                     }
                 }
             }
             let config = BenchmarkConfiguration(secondsPerTest: seconds, threads: threads, enabled: kinds, repetitions: repetitions)
-            let report = try BenchmarkRunner.run(configuration: config, cancellation: CancellationToken())
+            let report = try BenchmarkRunner.run(configuration: config, cancellation: CancellationToken(), language: language)
             let data = try ReportCodec.encode(report)
             if let output = options["--output"] {
                 let url = try ReportStore.export(report, name: output)
-                print("Rapport enregistré dans le conteneur : \(url.path)")
+                print(text("Report saved in the container: {path}", ["path": url.path]))
             } else { print(String(decoding: data, as: UTF8.self)) }
             exit(0)
         } catch {
-            FileHandle.standardError.write(Data("BenchLibre : \(error.localizedDescription)\n".utf8)); exit(1)
+            let reason = (error as? BenchmarkFailure)?.localizedDescription(in: language) ?? error.localizedDescription
+            FileHandle.standardError.write(Data("BenchLibre: \(reason)\n".utf8)); exit(1)
         }
     }
 }

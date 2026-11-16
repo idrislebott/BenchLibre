@@ -16,31 +16,31 @@ public enum ReportCodec {
             try container.encode(formatter().string(from: date))
         }
         let data = try encoder.encode(report)
-        guard data.count <= ReportLimits.maximumBytes else { throw BenchmarkFailure.validationFailed("Rapport trop volumineux.") }
+        guard data.count <= ReportLimits.maximumBytes else { throw BenchmarkFailure.validationFailed(Localizer(.english).text("Report is too large.")) }
         return data
     }
     public static func decode(_ data: Data) throws -> BenchmarkReport {
-        guard !data.isEmpty, data.count <= ReportLimits.maximumBytes else { throw BenchmarkFailure.validationFailed("Taille de rapport non autorisée.") }
+        guard !data.isEmpty, data.count <= ReportLimits.maximumBytes else { throw BenchmarkFailure.validationFailed(Localizer(.english).text("Report size is not allowed.")) }
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .custom { source in
             let container = try source.singleValueContainer()
             let value = try container.decode(String.self)
-            guard value.utf8.count <= 64 else { throw BenchmarkFailure.validationFailed("Date trop longue.") }
+            guard value.utf8.count <= 64 else { throw BenchmarkFailure.validationFailed(Localizer(.english).text("Date string is too long.")) }
             guard let date = formatter().date(from: value) else {
-                throw DecodingError.dataCorruptedError(in: container, debugDescription: "Date de rapport invalide")
+                throw DecodingError.dataCorruptedError(in: container, debugDescription: Localizer(.english).text("Invalid report date"))
             }
             return date
         }
         let report = try decoder.decode(BenchmarkReport.self, from: data)
-        guard [1, 2].contains(report.formatVersion) else { throw BenchmarkFailure.unavailable("Version de rapport non prise en charge.") }
+        guard [1, 2].contains(report.formatVersion) else { throw BenchmarkFailure.unavailable(Localizer(.english).text("Unsupported report version.")) }
         try report.configuration.validate()
         guard !report.results.isEmpty, Set(report.results.map(\.kind)).count == report.results.count,
               report.results.allSatisfy({ report.configuration.enabled.contains($0.kind) }) else {
-            throw BenchmarkFailure.validationFailed("Liste de résultats invalide.")
+            throw BenchmarkFailure.validationFailed(Localizer(.english).text("Invalid result list."))
         }
         for result in report.results {
             guard result.validated, result.value.isFinite, result.value > 0, result.unit == result.kind.unit else {
-                throw BenchmarkFailure.validationFailed("Mesure de rapport invalide.")
+                throw BenchmarkFailure.validationFailed(Localizer(.english).text("Invalid report measurement."))
             }
             if report.formatVersion == 2 { try BenchmarkRunner.validateResult(result, expected: result.kind) }
         }
@@ -49,7 +49,7 @@ public enum ReportCodec {
         // Dictionary(uniqueKeysWithValues:).
         if let summaries = report.summaries,
            Set(summaries.map(\.kind)).count != summaries.count {
-            throw BenchmarkFailure.validationFailed("Plusieurs résumés décrivent le même test.")
+            throw BenchmarkFailure.validationFailed(Localizer(.english).text("Multiple summaries describe the same test."))
         }
         if report.formatVersion == 2 { try validateVersion2(report) }
         return report
@@ -60,7 +60,7 @@ public enum ReportCodec {
     private static func validateVersion2(_ report: BenchmarkReport) throws {
         guard let trials = report.trials, let summaries = report.summaries,
               let conditions = report.conditions, let omissions = report.omissions else {
-            throw BenchmarkFailure.validationFailed("Le rapport v2 doit contenir passages, résumés, conditions et omissions.")
+            throw BenchmarkFailure.validationFailed(Localizer(.english).text("A v2 report must include trials, summaries, conditions and omissions."))
         }
         let completeKinds = Set(report.results.map(\.kind))
         let omittedKinds = Set(omissions.map(\.kind))
@@ -69,32 +69,32 @@ public enum ReportCodec {
               omittedKinds.count == omissions.count,
               completeKinds.isDisjoint(with: omittedKinds),
               completeKinds.union(omittedKinds) == enabledKinds else {
-            throw BenchmarkFailure.validationFailed("Les résultats, résumés et omissions ne correspondent pas aux tests sélectionnés.")
+            throw BenchmarkFailure.validationFailed(Localizer(.english).text("Results, summaries and omissions do not match the selected tests."))
         }
         guard report.startedAt.timeIntervalSince1970.isFinite,
               report.endedAt.timeIntervalSince1970.isFinite,
               report.monotonicElapsedSeconds != nil || report.endedAt >= report.startedAt else {
-            throw BenchmarkFailure.validationFailed("La chronologie du rapport est invalide.")
+            throw BenchmarkFailure.validationFailed(Localizer(.english).text("Invalid report chronology."))
         }
 
         let timeTolerance = 0.000_001
         var previousConditionTime = 0.0
         guard conditions.count >= 2, let firstCondition = conditions.first,
               firstCondition.elapsedSeconds <= timeTolerance else {
-            throw BenchmarkFailure.validationFailed("Le journal doit contenir les conditions initiales et finales.")
+            throw BenchmarkFailure.validationFailed(Localizer(.english).text("The log must include initial and final conditions."))
         }
         for condition in conditions {
             guard condition.elapsedSeconds.isFinite, condition.elapsedSeconds >= 0,
                   condition.elapsedSeconds >= previousConditionTime,
                   !condition.thermalState.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
                   !condition.powerSource.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-                throw BenchmarkFailure.validationFailed("Le journal des conditions est invalide ou désordonné.")
+                throw BenchmarkFailure.validationFailed(Localizer(.english).text("The conditions log is invalid or out of order."))
             }
             previousConditionTime = condition.elapsedSeconds
         }
         if let elapsed = report.monotonicElapsedSeconds {
             guard abs(elapsed - previousConditionTime) <= timeTolerance else {
-                throw BenchmarkFailure.validationFailed("La durée monotone ne correspond pas au journal des conditions.")
+                throw BenchmarkFailure.validationFailed(Localizer(.english).text("Monotonic duration does not match the conditions log."))
             }
         }
 
@@ -109,7 +109,7 @@ public enum ReportCodec {
                   trial.startedAtSeconds >= 0, trial.endedAtSeconds >= trial.startedAtSeconds,
                   trial.startedAtSeconds + timeTolerance >= previousTrialEnd,
                   trial.endedAtSeconds <= previousConditionTime + timeTolerance else {
-                throw BenchmarkFailure.validationFailed("Un passage est dupliqué, désordonné ou hors du journal des conditions.")
+                throw BenchmarkFailure.validationFailed(Localizer(.english).text("A trial is duplicated, out of order or outside the conditions log."))
             }
             try BenchmarkRunner.validateResult(trial.result, expected: trial.kind)
             grouped[trial.kind, default: []].append(trial)
@@ -120,7 +120,7 @@ public enum ReportCodec {
             let kindTrials = grouped[representative.kind] ?? []
             guard kindTrials.count == repetitions,
                   let actual = summaries.first(where: { $0.kind == representative.kind }) else {
-                throw BenchmarkFailure.validationFailed("Un test terminé ne contient pas tous les passages demandés.")
+                throw BenchmarkFailure.validationFailed(Localizer(.english).text("A completed test does not include every requested pass."))
             }
             let expected = try MeasurementStatistics.summarize(kind: representative.kind,
                                                                values: kindTrials.map { $0.result.value })
@@ -130,7 +130,7 @@ public enum ReportCodec {
                   equivalent(actual.coefficientOfVariationPercent, expected.coefficientOfVariationPercent),
                   representative.value == expected.median,
                   kindTrials.contains(where: { sameResult($0.result, representative) }) else {
-                throw BenchmarkFailure.validationFailed("Le résumé ou le passage médian ne correspond pas aux mesures brutes.")
+                throw BenchmarkFailure.validationFailed(Localizer(.english).text("The summary or median pass does not match the raw measurements."))
             }
         }
         for omission in omissions {
@@ -139,7 +139,7 @@ public enum ReportCodec {
             guard !omission.reason.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
                   omission.completedRuns == kindTrials.count, omission.completedRuns < repetitions,
                   Set(kindTrials.map(\.iteration)) == expectedIterations else {
-                throw BenchmarkFailure.validationFailed("Une omission ne correspond pas aux passages conservés.")
+                throw BenchmarkFailure.validationFailed(Localizer(.english).text("An omission does not match the retained passes."))
             }
         }
     }

@@ -1,3 +1,5 @@
+> Complément 0.3.1 : lecture simplifiée et comparaison locale de sessions. Neuf tests supplémentaires valident les règles de référence et les pourcentages ; la suite Release complète passe à 75 tests. Aucune dépendance ni permission ajoutée. Le rapport ci-dessous documente l’audit de sécurité 0.3.0.
+
 # Audit de sécurité et de mesure — BenchLibre 0.3.0
 
 Date : 16 novembre 2026. Charge : `benchlibre-suite-v3`. Format JSON : 2, compatible avec les anciens rapports acceptés par les contrôles de lecture.

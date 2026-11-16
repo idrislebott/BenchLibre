@@ -48,5 +48,5 @@ enum ReportLimits {
             try string(sample.thermalState, maximum: 64); try string(sample.powerSource, maximum: 64)
         }
     }
-    private static func invalid() -> BenchmarkFailure { .validationFailed("Le rapport dépasse les limites de taille ou de nombre d’éléments.") }
+    private static func invalid() -> BenchmarkFailure { .validationFailed(Localizer(.english).text("The report exceeds size or item-count limits.")) }
 }

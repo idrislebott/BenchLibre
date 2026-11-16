@@ -27,29 +27,27 @@ public enum DiskBenchmarks {
     private enum Operation { case read, write }
 
     public static func runRead(duration: Double, cancellation: CancellationToken,
-                               progress: @escaping EngineProgress) throws -> MetricResult {
-        try runRead(duration: duration, cancellation: cancellation,
-                    settings: Settings(maximumTransferBytes: 64 * 1_024 * 1_024 * 1_024), progress: progress)
+                               language: AppLanguage = .english, progress: @escaping EngineProgress) throws -> MetricResult {
+        try runRead(duration: duration, cancellation: cancellation, settings: Settings(maximumTransferBytes: 64 * 1_024 * 1_024 * 1_024), language: language, progress: progress)
     }
 
     public static func runWrite(duration: Double, cancellation: CancellationToken,
-                                progress: @escaping EngineProgress) throws -> MetricResult {
-        try runWrite(duration: duration, cancellation: cancellation,
-                     settings: Settings(maximumTransferBytes: 512 * 1_024 * 1_024), progress: progress)
+                                language: AppLanguage = .english, progress: @escaping EngineProgress) throws -> MetricResult {
+        try runWrite(duration: duration, cancellation: cancellation, settings: Settings(maximumTransferBytes: 512 * 1_024 * 1_024), language: language, progress: progress)
     }
 
     static func runRead(duration: Double, cancellation: CancellationToken, settings: Settings,
-                        progress: @escaping EngineProgress) throws -> MetricResult {
-        try run(.read, duration: duration, cancellation: cancellation, settings: settings, progress: progress)
+                        language: AppLanguage = .english, progress: @escaping EngineProgress) throws -> MetricResult {
+        try run(.read, duration: duration, cancellation: cancellation, settings: settings, language: language, progress: progress)
     }
 
     static func runWrite(duration: Double, cancellation: CancellationToken, settings: Settings,
-                         progress: @escaping EngineProgress) throws -> MetricResult {
-        try run(.write, duration: duration, cancellation: cancellation, settings: settings, progress: progress)
+                         language: AppLanguage = .english, progress: @escaping EngineProgress) throws -> MetricResult {
+        try run(.write, duration: duration, cancellation: cancellation, settings: settings, language: language, progress: progress)
     }
 
     private static func run(_ operation: Operation, duration: Double, cancellation: CancellationToken,
-                            settings: Settings, progress: @escaping EngineProgress) throws -> MetricResult {
+                            settings: Settings, language: AppLanguage = .english, progress: @escaping EngineProgress) throws -> MetricResult {
         guard duration.isFinite, duration >= 0.1, duration <= 120,
               settings.fileBytes >= 4_096, settings.fileBytes <= 64 * mib,
               settings.fileBytes.isMultiple(of: 4_096), settings.chunkBytes >= 4_096,
@@ -58,13 +56,13 @@ public enum DiskBenchmarks {
               settings.maximumTransferBytes >= UInt64(settings.fileBytes),
               settings.maximumTransferBytes.isMultiple(of: UInt64(settings.fileBytes)),
               settings.maximumTransferBytes <= (operation == .write ? 512 * 1_024 * 1_024 : 64 * 1_024 * 1_024 * 1_024) else {
-            throw BenchmarkFailure.invalidConfiguration("Configuration du test fichier invalide (durée : 0,1 à 120 s).")
+            throw BenchmarkFailure.invalidConfiguration(Localizer(language).text("Invalid file test configuration (duration: 0.1 to 120 s)."))
         }
         try cancellation.check()
-        progress(EngineUpdate(fraction: 0, message: "Préparation du fichier temporaire de \(settings.fileBytes / mib) Mio…"))
+        progress(EngineUpdate(fraction: 0, message: Localizer(language).text("Preparing a {v0} MiB temporary file…", values: ["v0": String(describing: settings.fileBytes / mib)])))
 
         guard settings.temporaryRoot.isFileURL else {
-            throw BenchmarkFailure.invalidConfiguration("Le dossier temporaire doit être local.")
+            throw BenchmarkFailure.invalidConfiguration(Localizer(language).text("The temporary directory must be local."))
         }
         if settings.temporaryRoot.standardizedFileURL == AppStorage.temporary.standardizedFileURL {
             _ = try AppStorage.prepare("Temporary")
@@ -72,19 +70,19 @@ public enum DiskBenchmarks {
         let rootFD = try AppStorage.openDirectory(settings.temporaryRoot)
         defer { _ = Darwin.close(rootFD) }
         var filesystem = statfs()
-        guard Darwin.fstatfs(rootFD, &filesystem) == 0 else { throw ioFailure("Espace libre inaccessible") }
+        guard Darwin.fstatfs(rootFD, &filesystem) == 0 else { throw ioFailure(Localizer(language).text("Free space is unavailable")) }
         let available = Double(filesystem.f_bavail) * Double(filesystem.f_bsize)
         guard available.isFinite, available >= Double(settings.fileBytes + 64 * mib) else {
-            throw BenchmarkFailure.unavailable("Espace libre insuffisant pour le fichier temporaire et sa réserve de 64 Mio.")
+            throw BenchmarkFailure.unavailable(Localizer(language).text("Insufficient free space for the temporary file and its 64 MiB reserve."))
         }
         let workspaceName = "io-\(UUID().uuidString)"
         guard Darwin.mkdirat(rootFD, workspaceName, mode_t(0o700)) == 0 else {
-            throw ioFailure("Création du dossier privé de mesure impossible")
+            throw ioFailure(Localizer(language).text("Unable to create a private measurement directory"))
         }
         let workspaceFD = Darwin.openat(rootFD, workspaceName, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
         guard workspaceFD >= 0 else {
             _ = Darwin.unlinkat(rootFD, workspaceName, AT_REMOVEDIR)
-            throw ioFailure("Ouverture du dossier privé impossible")
+            throw ioFailure(Localizer(language).text("Unable to open the private directory"))
         }
         defer { _ = Darwin.close(workspaceFD) }
         var removed = false
@@ -97,20 +95,20 @@ public enum DiskBenchmarks {
         defer { if !removed { _ = cleanup() } }
         try cancellation.check()
         let descriptor = Darwin.openat(workspaceFD, "payload.bin", O_RDWR | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, mode_t(0o600))
-        guard descriptor >= 0 else { throw ioFailure("Création du fichier temporaire impossible") }
+        guard descriptor >= 0 else { throw ioFailure(Localizer(language).text("Unable to create the temporary file")) }
         defer { _ = Darwin.close(descriptor) }
         guard Darwin.fcntl(descriptor, F_NOCACHE, 1) == 0 else {
-            throw ioFailure("F_NOCACHE indisponible ; aucun débit avec cache de données n’est substitué")
+            throw ioFailure(Localizer(language).text("F_NOCACHE is unavailable; no data-cached rate is substituted"))
         }
 
         var patternAllocation: UnsafeMutableRawPointer?
         guard posix_memalign(&patternAllocation, 4_096, settings.fileBytes) == 0, let pattern = patternAllocation else {
-            throw BenchmarkFailure.unavailable("Allocation du tampon de référence impossible.")
+            throw BenchmarkFailure.unavailable(Localizer(language).text("Unable to allocate the reference buffer."))
         }
         defer { free(pattern) }
         var inputAllocation: UnsafeMutableRawPointer?
         guard posix_memalign(&inputAllocation, 4_096, settings.fileBytes) == 0, let input = inputAllocation else {
-            throw BenchmarkFailure.unavailable("Allocation du tampon de lecture impossible.")
+            throw BenchmarkFailure.unavailable(Localizer(language).text("Unable to allocate the read buffer."))
         }
         defer { free(input) }
         pattern.bindMemory(to: UInt64.self, capacity: settings.fileBytes / 8).initialize(repeating: 0, count: settings.fileBytes / 8)
@@ -143,7 +141,7 @@ public enum DiskBenchmarks {
             if writing { try synchronize(descriptor, cancellation: cancellation) }
             let interval = seconds(before, now())
             guard interval.isFinite, interval > 0 else {
-                throw BenchmarkFailure.validationFailed("Intervalle d’E/S invalide.")
+                throw BenchmarkFailure.validationFailed(Localizer(language).text("Invalid I/O interval."))
             }
             // Read validation is outside the measured I/O window. All bytes
             // must match; a bounded hash provides an observable report checksum.
@@ -151,7 +149,7 @@ public enum DiskBenchmarks {
                 try validate(input, against: pattern, bytes: settings.fileBytes)
                 finalChecksum = checksum(input, bytes: settings.fileBytes)
                 guard finalChecksum == expectedChecksum else {
-                    throw BenchmarkFailure.validationFailed("Checksum de lecture fichier incorrect.")
+                    throw BenchmarkFailure.validationFailed(Localizer(language).text("Incorrect file read checksum."))
                 }
             }
             totalBytes += UInt64(settings.fileBytes)
@@ -167,7 +165,7 @@ public enum DiskBenchmarks {
                 progress(EngineUpdate(fraction: min(0.999, max(measuredSeconds / duration,
                                                                Double(totalBytes) / Double(settings.maximumTransferBytes))),
                                       value: Double(totalBytes) / measuredSeconds / 1e9,
-                                      message: writing ? "Écriture séquentielle avec fsync…" : "Lecture séquentielle avec F_NOCACHE…"))
+                                      message: writing ? Localizer(language).text("Sequential write with fsync…") : Localizer(language).text("Sequential read with F_NOCACHE…")))
             }
         }
         if sampleBytes > 0 { samples.append(Double(sampleBytes) / sampleSeconds / 1e9) }
@@ -184,16 +182,16 @@ public enum DiskBenchmarks {
         guard totalBytes > 0, measuredSeconds > 0, rate.isFinite, rate > 0,
               finalChecksum == expectedChecksum, !samples.isEmpty,
               samples.allSatisfy({ $0.isFinite && $0 > 0 }) else {
-            throw BenchmarkFailure.validationFailed("La mesure fichier n’a pas produit de résultat vérifiable.")
+            throw BenchmarkFailure.validationFailed(Localizer(language).text("File measurement produced no verifiable result."))
         }
         let capped = totalBytes == settings.maximumTransferBytes && measuredSeconds < duration
-        let capDescription = capped ? "Budget d’octets atteint avant la durée demandée." : "Fenêtre de durée demandée atteinte."
-        let operationDescription = writing ? "Écriture séquentielle ; fsync inclus dans chaque fenêtre." : "Lecture séquentielle ; tous les octets vérifiés après chaque fenêtre."
-        let details = "File-IO-v2. \(operationDescription) Fichier temporaire : \(settings.fileBytes) octets, blocs de \(settings.chunkBytes) octets ; \(totalBytes) octets transférés, plafond \(settings.maximumTransferBytes). \(capDescription) F_NOCACHE activé pour le descripteur : cache de données désactivé, sans garantie de contournement des caches du contrôleur ou du périphérique. Somme des fenêtres monotones seek + E/S\(writing ? " + fsync" : "") ; allocation, création initiale, premier accès et validation exclus. Fichier supprimé à la fin."
+        let capDescription = capped ? Localizer(language).text("Byte budget reached before the requested duration.") : Localizer(language).text("Requested measurement duration reached.")
+        let operationDescription = writing ? Localizer(language).text("Sequential write; fsync included in every window.") : Localizer(language).text("Sequential read; every byte checked after each window.")
+        let details = Localizer(language).text("File-IO-v2. {v0} Temporary file: {v1} bytes, {v2}-byte blocks; {v3} bytes transferred, cap {v4}. {v5} F_NOCACHE enabled on the descriptor: data caching disabled, without a guarantee of bypassing device or controller caches. Sum of monotonic seek + I/O{v6} windows; allocation, initial creation, first touch and validation excluded. File removed afterward.", values: ["v0": String(describing: operationDescription), "v1": String(describing: settings.fileBytes), "v2": String(describing: settings.chunkBytes), "v3": String(describing: totalBytes), "v4": String(describing: settings.maximumTransferBytes), "v5": String(describing: capDescription), "v6": String(describing: writing ? Localizer(language).text(" + fsync") : "")])
         guard cleanup() else {
-            throw BenchmarkFailure.unavailable("La mesure est terminée mais le nettoyage du dossier privé a échoué.")
+            throw BenchmarkFailure.unavailable(Localizer(language).text("The measurement finished but private-directory cleanup failed."))
         }
-        progress(EngineUpdate(fraction: 1, value: rate, message: writing ? "Écriture fichier validée." : "Lecture fichier validée."))
+        progress(EngineUpdate(fraction: 1, value: rate, message: writing ? Localizer(language).text("File write validated.") : Localizer(language).text("File read validated.")))
         return MetricResult(kind: writing ? .diskWrite : .diskRead, value: rate, unit: "Go/s",
                             elapsedSeconds: measuredSeconds, samples: samples, checksum: finalChecksum,
                             details: details, validated: true, workAmount: Double(totalBytes),
@@ -211,10 +209,10 @@ public enum DiskBenchmarks {
             let count = writing ? Darwin.write(descriptor, pointer, amount) : Darwin.read(descriptor, pointer, amount)
             if count < 0 {
                 if errno == EINTR { continue }
-                throw ioFailure(writing ? "Écriture du fichier temporaire impossible" : "Lecture du fichier temporaire impossible")
+                throw ioFailure(writing ? Localizer(.english).text("Unable to write the temporary file") : Localizer(.english).text("Unable to read the temporary file"))
             }
             guard count > 0 else {
-                throw BenchmarkFailure.validationFailed(writing ? "Écriture interrompue sans progression." : "Fin du fichier temporaire avant les données attendues.")
+                throw BenchmarkFailure.validationFailed(writing ? Localizer(.english).text("Write stopped without progress.") : Localizer(.english).text("Temporary file ended before the expected data."))
             }
             transferred += count
             update?(transferred)
@@ -222,14 +220,14 @@ public enum DiskBenchmarks {
     }
 
     private static func seekStart(_ descriptor: Int32) throws {
-        guard Darwin.lseek(descriptor, 0, SEEK_SET) == 0 else { throw ioFailure("Positionnement du fichier temporaire impossible") }
+        guard Darwin.lseek(descriptor, 0, SEEK_SET) == 0 else { throw ioFailure(Localizer(.english).text("Unable to seek to the start of the temporary file")) }
     }
 
     private static func synchronize(_ descriptor: Int32, cancellation: CancellationToken) throws {
         while true {
             try cancellation.check()
             if Darwin.fsync(descriptor) == 0 { return }
-            if errno != EINTR { throw ioFailure("Synchronisation du fichier temporaire impossible") }
+            if errno != EINTR { throw ioFailure(Localizer(.english).text("Unable to synchronize the temporary file")) }
         }
     }
 
@@ -250,7 +248,7 @@ public enum DiskBenchmarks {
     private static func validate(_ actual: UnsafeMutableRawPointer, against reference: UnsafeMutableRawPointer,
                                  bytes: Int) throws {
         guard memcmp(actual, reference, bytes) == 0 else {
-            throw BenchmarkFailure.validationFailed("Le contenu du fichier temporaire diffère de la référence.")
+            throw BenchmarkFailure.validationFailed(Localizer(.english).text("Temporary file contents differ from the reference."))
         }
     }
 
@@ -266,7 +264,7 @@ public enum DiskBenchmarks {
 
     private static func ioFailure(_ message: String) -> BenchmarkFailure {
         let description = String(cString: strerror(errno))
-        return .unavailable("\(message) : \(description)")
+        return .unavailable(Localizer(.english).text("{v0}: {v1}", values: ["v0": String(describing: message), "v1": String(describing: description)]))
     }
     private static func now() -> UInt64 { DispatchTime.now().uptimeNanoseconds }
     private static func seconds(_ start: UInt64, _ end: UInt64) -> Double { Double(end - start) / 1e9 }

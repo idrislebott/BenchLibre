@@ -15,30 +15,30 @@ public enum LatencyBenchmark {
     }
 
     public static func run(duration: Double, cancellation: CancellationToken,
-                           progress: @escaping EngineProgress) throws -> MetricResult {
-        try measure(duration: duration, nodeCount: publicNodeCount, cancellation: cancellation, progress: progress)
+                           language: AppLanguage = .english, progress: @escaping EngineProgress) throws -> MetricResult {
+        try measure(duration: duration, nodeCount: publicNodeCount, cancellation: cancellation, language: language, progress: progress)
     }
 
     // A smaller footprint permits fast correctness checks. Production callers
     // always use publicNodeCount, so calibration never changes the workload.
     static func measure(duration: Double, nodeCount: UInt32, cancellation: CancellationToken,
-                        progress: @escaping EngineProgress) throws -> MetricResult {
+                        language: AppLanguage = .english, progress: @escaping EngineProgress) throws -> MetricResult {
         guard duration.isFinite, duration >= 0.1, duration <= 120,
               nodeCount >= 2, nodeCount <= publicNodeCount else {
-            throw BenchmarkFailure.invalidConfiguration("Configuration du test de latence invalide.")
+            throw BenchmarkFailure.invalidConfiguration(Localizer(language).text("Invalid latency test configuration."))
         }
         try cancellation.check()
-        progress(EngineUpdate(fraction: 0, message: "Préparation du cycle aléatoire de latence…"))
+        progress(EngineUpdate(fraction: 0, message: Localizer(language).text("Preparing the randomized latency cycle…")))
         let cancellationPointer = Unmanaged.passUnretained(cancellation).toOpaque()
         guard let context = bl_latency_create_cancellable(nodeCount, seed, cancellationCheck, cancellationPointer) else {
             try cancellation.check()
-            throw BenchmarkFailure.unavailable("Impossible d’allouer le cycle du test de latence.")
+            throw BenchmarkFailure.unavailable(Localizer(language).text("Unable to allocate the latency test cycle."))
         }
         defer { bl_latency_destroy(context) }
         let bytes = bl_latency_working_set_bytes(context)
         guard bl_latency_validate_cancellable(context, cancellationCheck, cancellationPointer) == 1 else {
             try cancellation.check()
-            throw BenchmarkFailure.validationFailed("Le test de latence ne contient pas un cycle complet valide.")
+            throw BenchmarkFailure.validationFailed(Localizer(language).text("The latency test does not contain a valid complete cycle."))
         }
         try cancellation.check()
 
@@ -50,14 +50,14 @@ public enum LatencyBenchmark {
             let count = min(maximumChunk, remaining)
             let warmed = bl_latency_chase(context, warmIndex, count)
             guard warmed.valid == 1, warmed.loads == count else {
-                throw BenchmarkFailure.validationFailed("L’échauffement du test de latence a échoué.")
+                throw BenchmarkFailure.validationFailed(Localizer(language).text("Latency test warm-up failed."))
             }
             warmIndex = warmed.final_index
             remaining -= count
         }
-        guard warmIndex == 0 else { throw BenchmarkFailure.validationFailed("Cycle de latence incomplet après échauffement.") }
+        guard warmIndex == 0 else { throw BenchmarkFailure.validationFailed(Localizer(language).text("Incomplete latency cycle after warm-up.")) }
 
-        progress(EngineUpdate(fraction: 0, message: "Calibration des accès dépendants…"))
+        progress(EngineUpdate(fraction: 0, message: Localizer(language).text("Calibrating dependent accesses…")))
         var chunk: UInt64 = 4_096
         var calibrationIndex: UInt32 = 0
         while true {
@@ -66,7 +66,7 @@ public enum LatencyBenchmark {
             let measured = bl_latency_chase(context, calibrationIndex, chunk)
             let elapsed = seconds(started, now())
             guard measured.valid == 1, measured.loads == chunk else {
-                throw BenchmarkFailure.validationFailed("Le noyau de latence a produit un comptage invalide.")
+                throw BenchmarkFailure.validationFailed(Localizer(language).text("The latency kernel produced an invalid work count."))
             }
             calibrationIndex = measured.final_index
             if elapsed >= 0.002 || chunk == maximumChunk { break }
@@ -86,7 +86,7 @@ public enum LatencyBenchmark {
             let measured = bl_latency_chase(context, index, chunk)
             let kernelSeconds = seconds(kernelStart, now())
             guard measured.valid == 1, measured.loads == chunk, kernelSeconds > 0 else {
-                throw BenchmarkFailure.validationFailed("Un lot d’accès dépendants est invalide.")
+                throw BenchmarkFailure.validationFailed(Localizer(language).text("A dependent-access chunk is invalid."))
             }
             index = measured.final_index
             loads += measured.loads
@@ -100,7 +100,7 @@ public enum LatencyBenchmark {
                 let elapsed = measuredSeconds
                 progress(EngineUpdate(fraction: min(0.999, elapsed / duration),
                                      value: elapsed / Double(loads) * 1_000_000_000,
-                                     message: "Accès mémoire dépendants · \(bytes / 1_048_576) Mio…"))
+                                     message: Localizer(language).text("Dependent memory accesses · {v0} MiB…", values: ["v0": String(describing: bytes / 1_048_576)])))
             }
         }
         try cancellation.check()
@@ -118,15 +118,15 @@ public enum LatencyBenchmark {
               samples.allSatisfy({ $0.isFinite && $0 > 0 }),
               bl_latency_validate_cancellable(context, cancellationCheck, cancellationPointer) == 1 else {
             try cancellation.check()
-            throw BenchmarkFailure.validationFailed("La mesure de latence n’a pas pu être validée.")
+            throw BenchmarkFailure.validationFailed(Localizer(language).text("The latency measurement could not be validated."))
         }
         let expected = bl_latency_expected_index(context, 0, loads)
         try cancellation.check()
-        guard index == expected else { throw BenchmarkFailure.validationFailed("L’index final des accès dépendants est incorrect.") }
-        progress(EngineUpdate(fraction: 1, value: value, message: "Latence des accès dépendants validée."))
+        guard index == expected else { throw BenchmarkFailure.validationFailed(Localizer(language).text("The final dependent-access index is incorrect.")) }
+        progress(EngineUpdate(fraction: 1, value: value, message: Localizer(language).text("Dependent-access latency validated.")))
         return MetricResult(kind: .latency, value: value, unit: "ns/accès", elapsedSeconds: elapsed,
                             samples: samples, checksum: Double(index),
-                            details: "Pointer-chase-v2 : cycle déterministe de \(nodeCount) indices UInt32 dans \(bytes) octets (\(bytes / 1_048_576) Mio), nœuds espacés de 64 octets, graine 0x4c4154454e435931. \(loads) lectures dépendantes ; lots de \(chunk) accès. Somme des fenêtres monotones du noyau C / nombre d’accès ; appels inclus, callbacks et contrôle Swift exclus ; allocation, préparation, échauffement, calibration et validation exclus. Cycle complet et index final vérifiés. Latence effective de cette charge à travers la hiérarchie de caches, sans garantie de latence physique DRAM. Une valeur plus basse est meilleure.",
+                            details: Localizer(language).text("Pointer-chase-v2: deterministic cycle of {v0} UInt32 indices in {v1} bytes ({v2} MiB), nodes spaced 64 bytes apart, seed 0x4c4154454e435931. {v3} dependent loads; chunks of {v4} accesses. Sum of monotonic C kernel windows divided by accesses; calls included, Swift control and callbacks excluded; allocation, preparation, warm-up, calibration and validation excluded. Full cycle and final index checked. Effective latency through the cache hierarchy for this workload, not certified physical DRAM latency. Lower is better.", values: ["v0": String(describing: nodeCount), "v1": String(describing: bytes), "v2": String(describing: bytes / 1_048_576), "v3": String(describing: loads), "v4": String(describing: chunk)]),
                             validated: true, workAmount: Double(loads), workUnit: "dependent-loads",
                             timingSeconds: elapsed, timingSource: "monotonic-kernel-intervals")
     }

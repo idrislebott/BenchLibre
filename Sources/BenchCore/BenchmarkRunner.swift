@@ -15,7 +15,7 @@ public struct SuiteUpdate: Sendable {
 
 public enum BenchmarkRunner {
     public static let workloadVersion = "benchlibre-suite-v3"
-    public static let applicationVersion = "0.3.0"
+    public static let applicationVersion = "0.3.2"
 
     static func validateResult(_ result: MetricResult, expected kind: BenchmarkKind) throws {
         let timingSources: Set<String>
@@ -34,7 +34,7 @@ public enum BenchmarkRunner {
               result.workUnit == kind.workUnit,
               let source = result.timingSource, timingSources.contains(source),
               abs(kind.measuredValue(work: work, seconds: seconds) - result.value) <= result.value * 1e-9 else {
-            throw BenchmarkFailure.validationFailed("Résultat \(kind.title) invalide : le rapport n’a pas été enregistré.")
+            throw BenchmarkFailure.validationFailed(Localizer(.english).text("Invalid {v0} result: the report was not saved.", values: ["v0": String(describing: kind.title)]))
         }
     }
 
@@ -43,11 +43,12 @@ public enum BenchmarkRunner {
     /// QoS requests scheduling priority, not affinity to particular P/E cores.
     public static func run(configuration: BenchmarkConfiguration,
                            cancellation: CancellationToken,
+                           language: AppLanguage = .english,
                            progress: @escaping @Sendable (SuiteUpdate) -> Void = { _ in }) throws -> BenchmarkReport {
         try configuration.validate()
         try cancellation.check()
         let activity = ProcessInfo.processInfo.beginActivity(options: .userInitiated,
-            reason: "Session de mesure BenchLibre")
+            reason: Localizer(language).text("BenchLibre benchmark session"))
         defer { ProcessInfo.processInfo.endActivity(activity) }
         let hardware = SystemInfo.capture()
         let monitor = ConditionMonitor()
@@ -74,12 +75,12 @@ public enum BenchmarkRunner {
                     let fraction = min(1, max(0, phase.fraction.isFinite ? phase.fraction : 0))
                     relay.enqueue(SuiteUpdate(kind: kind, overallFraction: (offset + fraction) / total,
                         phaseFraction: fraction, value: phase.value,
-                        message: "\(kind.title) · passage \(iteration)/\(repetitions) — \(phase.message)",
+                        message: Localizer(language).text("{v0} · pass {v1}/{v2} — {v3}", values: ["v0": String(describing: kind.localizedTitle(language)), "v1": String(describing: iteration), "v2": String(describing: repetitions), "v3": String(describing: phase.message)]),
                         completed: nil, iteration: iteration, repetitions: repetitions,
                         condition: monitor.latest, summary: nil))
                 }
                 let trialStart = monitor.elapsedSeconds
-                update(EngineUpdate(fraction: 0, message: "Préparation…"))
+                update(EngineUpdate(fraction: 0, message: Localizer(language).text("Preparing…")))
                 // Preserve deterministic cancellation at phase boundaries;
                 // this happens before entering an engine's timed window.
                 relay.flush()
@@ -92,22 +93,22 @@ public enum BenchmarkRunner {
                     switch kind {
                     case .cpu:
                         result = try CPUMemoryBenchmarks.runCPU(duration: configuration.secondsPerTest,
-                            threads: configuration.threads, cancellation: cancellation, progress: update)
+                            threads: configuration.threads, cancellation: cancellation, language: language, progress: update)
                     case .gpu:
                         result = try GPUBenchmark.run(duration: configuration.secondsPerTest,
-                            cancellation: cancellation, progress: update)
+                            cancellation: cancellation, language: language, progress: update)
                     case .memory:
                         result = try CPUMemoryBenchmarks.runMemory(duration: configuration.secondsPerTest,
-                            cancellation: cancellation, progress: update)
+                            cancellation: cancellation, language: language, progress: update)
                     case .latency:
                         result = try LatencyBenchmark.run(duration: configuration.secondsPerTest,
-                            cancellation: cancellation, progress: update)
+                            cancellation: cancellation, language: language, progress: update)
                     case .diskRead:
                         result = try DiskBenchmarks.runRead(duration: configuration.secondsPerTest,
-                            cancellation: cancellation, progress: update)
+                            cancellation: cancellation, language: language, progress: update)
                     case .diskWrite:
                         result = try DiskBenchmarks.runWrite(duration: configuration.secondsPerTest,
-                            cancellation: cancellation, progress: update)
+                            cancellation: cancellation, language: language, progress: update)
                     }
                 } catch BenchmarkFailure.unavailable(let reason) {
                     omission = reason
@@ -122,10 +123,10 @@ public enum BenchmarkRunner {
             trials.append(contentsOf: kindTrials)
             if let omission {
                 omissions.append(TestOmission(kind: kind, reason: omission, completedRuns: kindTrials.count))
-                notes.append("\(kind.title) non mesuré : \(omission)")
+                notes.append(Localizer(language).text("{v0} not measured: {v1}", values: ["v0": String(describing: kind.localizedTitle(language)), "v1": String(describing: omission)]))
                 progress(SuiteUpdate(kind: kind,
                     overallFraction: Double(kindIndex + 1) / Double(configuration.enabled.count),
-                    phaseFraction: 1, value: nil, message: "\(kind.title) indisponible : \(omission)",
+                    phaseFraction: 1, value: nil, message: Localizer(language).text("{v0} unavailable: {v1}", values: ["v0": String(describing: kind.localizedTitle(language)), "v1": String(describing: omission)]),
                     completed: nil, iteration: kindTrials.count, repetitions: repetitions,
                     condition: monitor.latest, summary: nil))
                 continue
@@ -137,28 +138,28 @@ public enum BenchmarkRunner {
             summaries.append(summary)
             progress(SuiteUpdate(kind: kind,
                 overallFraction: Double(kindIndex + 1) / Double(configuration.enabled.count),
-                phaseFraction: 1, value: summary.median, message: "\(kind.title) · médiane de \(repetitions) passage(s)",
+                phaseFraction: 1, value: summary.median, message: Localizer(language).text("{v0} · median of {v1} pass(es)", values: ["v0": String(describing: kind.localizedTitle(language)), "v1": String(describing: repetitions)]),
                 completed: representative, iteration: repetitions, repetitions: repetitions,
                 condition: monitor.latest, summary: summary))
         }
         try cancellation.check()
-        guard !results.isEmpty else { throw BenchmarkFailure.unavailable("Aucun test n’a pu être mesuré.") }
+        guard !results.isEmpty else { throw BenchmarkFailure.unavailable(Localizer(language).text("No test could be measured.")) }
         let conditions = monitor.finish()
         let finalThermal = conditions.last?.thermalState ?? SystemInfo.thermalState
         if conditions.contains(where: { $0.thermalState != "Nominal" }) {
-            notes.append("Un état thermique non nominal a été observé pendant la session ; voir le journal des conditions.")
+            notes.append(Localizer(language).text("A non-nominal thermal state was observed during the session; see the conditions log."))
         }
         if conditions.contains(where: \.lowPowerMode) {
-            notes.append("Le mode économie d’énergie a été observé pendant la session.")
+            notes.append(Localizer(language).text("Low Power Mode was observed during the session."))
         }
         if Set(conditions.map(\.powerSource)).count > 1 {
-            notes.append("L’alimentation a changé pendant la session.")
+            notes.append(Localizer(language).text("The power source changed during the session."))
         }
-        if repetitions == 1 { notes.append("Un seul passage : la dispersion entre passages n’est pas estimée.") }
+        if repetitions == 1 { notes.append(Localizer(language).text("Only one pass: between-pass variation is not estimated.")) }
         if configuration.secondsPerTest < 1 {
-            notes.append("Exécution courte de validation ; ne pas utiliser comme résultat de référence.")
+            notes.append(Localizer(language).text("Short validation run; do not use as a performance reference."))
         }
-        notes.append("Conditions observées au début, à la fin et environ chaque seconde ; ce journal ne certifie pas l’absence de bridage.")
+        notes.append(Localizer(language).text("Conditions observed at the start, end and about once per second; this log does not certify absence of throttling."))
         var report = BenchmarkReport(id: UUID(), formatVersion: 2, workloadVersion: workloadVersion,
             applicationVersion: applicationVersion, startedAt: started, endedAt: Date(),
             hardware: hardware, configuration: configuration, thermalBefore: initialThermal,

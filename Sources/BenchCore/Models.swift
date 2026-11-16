@@ -8,13 +8,14 @@ public enum BenchmarkKind: String, Codable, CaseIterable, Identifiable, Sendable
     public var title: String {
         switch self {
         case .cpu: return "CPU"
-        case .gpu: return "GPU Metal"
-        case .memory: return "Mémoire"
-        case .latency: return "Latence mémoire"
-        case .diskRead: return "Lecture disque"
-        case .diskWrite: return "Écriture disque"
+        case .gpu: return Localizer(.english).text("GPU Metal")
+        case .memory: return Localizer(.english).text("Memory")
+        case .latency: return Localizer(.english).text("Memory latency")
+        case .diskRead: return Localizer(.english).text("Disk read")
+        case .diskWrite: return Localizer(.english).text("Disk write")
         }
     }
+    public func localizedTitle(_ language: AppLanguage) -> String { Localizer(language).text(title) }
     public var unit: String {
         switch self {
         case .cpu, .gpu: return "GFLOP/s"
@@ -73,10 +74,14 @@ public enum BenchmarkFailure: LocalizedError {
     case validationFailed(String)
     public var errorDescription: String? {
         switch self {
-        case .cancelled: return "Test arrêté."
+        case .cancelled: return Localizer(.english).text("Test stopped.")
         case .invalidConfiguration(let s), .unavailable(let s), .validationFailed(let s): return s
         }
     }
+    public func localizedDescription(in language: AppLanguage) -> String {
+        Localizer(language).text(errorDescription ?? "Error")
+    }
+
 }
 
 public struct MetricResult: Codable, Identifiable, Sendable {
@@ -120,10 +125,10 @@ public struct BenchmarkConfiguration: Codable, Sendable {
     public func validate() throws {
         guard secondsPerTest.isFinite, secondsPerTest >= 0.1, secondsPerTest <= 120,
               threads > 0, threads <= 256, !enabled.isEmpty, Set(enabled).count == enabled.count else {
-            throw BenchmarkFailure.invalidConfiguration("Configuration de test invalide.")
+            throw BenchmarkFailure.invalidConfiguration(Localizer(.english).text("Invalid benchmark configuration."))
         }
         guard [1, 3, 5].contains(repetitions) else {
-            throw BenchmarkFailure.invalidConfiguration("Le nombre de passages doit être 1, 3 ou 5.")
+            throw BenchmarkFailure.invalidConfiguration(Localizer(.english).text("The number of passes must be 1, 3 or 5."))
         }
     }
 }
@@ -202,7 +207,7 @@ extension MetricResult {
         if let timingSource { try ReportLimits.string(timingSource, maximum: 128) }
         guard value.isFinite, value > 0, elapsedSeconds.isFinite, elapsedSeconds > 0, checksum.isFinite,
               !samples.isEmpty, samples.allSatisfy({ $0.isFinite && $0 > 0 }) else {
-            throw BenchmarkFailure.validationFailed("Mesure non finie, vide ou négative.")
+            throw BenchmarkFailure.validationFailed(Localizer(.english).text("Measurement is non-finite, empty or negative."))
         }
     }
 }

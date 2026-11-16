@@ -1,6 +1,34 @@
 # Vérifications effectuées
 
-## Version 0.3.0 — validation actuelle
+## Version 0.3.2 — anglais par défaut, français en option
+
+Le 16 novembre 2026, sur Apple M2 et macOS 27.2.1 :
+
+- Suite Release complète : 84 tests réussis, zéro échec. Neuf tests couvrent la localisation, les catalogues embarqués, les formats et la comparaison des versions macOS.
+- Application native Release universelle compilée pour arm64 et x86_64 ; exécution arm64 vérifiée sur ce Mac.
+- Signature ad hoc vérifiée strictement ; App Sandbox et Hardened Runtime actifs, seul entitlement sandbox, aucun droit réseau.
+- Six moteurs exécutés dans l’application signée en validation courte : six résultats validés, aucune omission. Les messages sont en anglais par défaut ; aide et erreurs françaises vérifiées avec --language fr.
+- Premier affichage anglais vérifié sur le Mac francophone ; passage immédiat au français, formats des dates/nombres et choix conservé après réouverture. Les menus macOS passent au français après réouverture.
+- Réglages de langue accessibles dans la barre latérale, le menu et la fenêtre de réglages.
+- Session graphique de 3 essais × 2,5 s pour chacun des quatre tests par défaut : changement du français à l’anglais pendant la mesure, puis 12 essais terminés et rapport enregistré sans interruption.
+- Historique et comparaison de sessions 0.3.0/0.3.1 ouverts dans les deux langues. Les textes historiques sont conservés et identifiés comme texte original.
+- Correction d’un faux avertissement de changement de macOS dû au libellé localisé « assemblage »/« Build ». Les nouvelles métadonnées système sont indépendantes de la langue ; les anciennes descriptions connues restent comparables.
+- Charge suite-v3, noyaux C/Metal, comptage du travail, format JSON et unités canoniques inchangés. Les validations courtes ne sont pas des références de performance.
+- Les résultats ASan historiques concernent la version 0.3.0 ; cette suite de 84 tests a été exécutée en Release normale.
+
+## Version 0.3.1 — lecture des résultats
+
+- Suite Release complète : 75 tests réussis, zéro échec ; neuf tests supplémentaires ciblent la sélection de référence, la compatibilité et les ratios extrêmes.
+- Application native Release universelle compilée, puis ouverte sur Apple M2.
+- Session réelle courte des six moteurs affichée avec les unités développées et les explications.
+- Référence locale compatible sélectionnée : pourcentages signés, attente plus longue et débit plus faible vérifiés dans la fenêtre.
+- Rechargement d’une session depuis l’historique et ouverture de « Comprendre ce résultat » vérifiés visuellement.
+- Réglages d’une nouvelle mesure accessibles près du résumé ; données techniques conservées.
+- Charge suite-v3 et format JSON inchangés. Les mesures courtes servent à vérifier le fonctionnement, pas à établir une référence de performance.
+- Les résultats ASan ci-dessous concernent l’audit 0.3.0 ; la nouvelle suite de 75 tests a été exécutée en Release normale.
+
+
+## Version 0.3.0 — audit historique
 
 Le 16 novembre 2026, sur Apple M2 et macOS 27.2.1 :
 

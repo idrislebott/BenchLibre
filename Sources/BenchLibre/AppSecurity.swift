@@ -41,7 +41,7 @@ enum AppSecurity {
 
     static func requireSandbox() {
         guard policy.valid else {
-            FileHandle.standardError.write(Data("BenchLibre exige App Sandbox, Hardened Runtime et une signature sans droit supplémentaire. Utilisez la cible macOS sécurisée Xcode avec votre compte normal.\n".utf8))
+            FileHandle.standardError.write(Data("BenchLibre requires App Sandbox, Hardened Runtime and a signature with no additional entitlements. Use the secure macOS Xcode target with a standard user account.\n".utf8))
             exit(78)
         }
     }

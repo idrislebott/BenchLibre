@@ -43,9 +43,9 @@ final class DiskBenchmarkTests: XCTestCase {
                 XCTAssertTrue(result.samples.allSatisfy { $0.isFinite && $0 > 0 })
                 XCTAssertTrue(result.checksum.isFinite)
                 XCTAssertTrue(result.details.contains("F_NOCACHE"))
-                XCTAssertTrue(result.details.contains("validation exclus"))
+                XCTAssertTrue(result.details.contains("validation excluded"))
             }
-            XCTAssertTrue(write.details.contains("fsync inclus"))
+            XCTAssertTrue(write.details.contains("fsync included"))
             XCTAssertEqual(try Data(contentsOf: sentinel), content)
             XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: root.path), ["keep.txt"])
         }

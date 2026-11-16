@@ -51,17 +51,17 @@ final class GPUBenchmarkTests: XCTestCase {
         let linkedDirectory = owner.appendingPathComponent("Shaders", isDirectory: true)
         try FileManager.default.createSymbolicLink(at: linkedDirectory, withDestinationURL: fixture)
         XCTAssertThrowsError(try GPUBenchmark.readVerifiedShader(at: linkedDirectory.appendingPathComponent("outside.metal"), containedIn: owner)) { error in
-            XCTAssertTrue(error.localizedDescription.contains("symbolique"))
+            XCTAssertTrue(error.localizedDescription.contains("symbolic link"))
         }
         let oversized = owner.appendingPathComponent("oversized.metal")
         try Data(repeating: 65, count: 16_385).write(to: oversized)
         XCTAssertThrowsError(try GPUBenchmark.readVerifiedShader(at: oversized, containedIn: owner)) { error in
-            XCTAssertTrue(error.localizedDescription.contains("taille bornée"))
+            XCTAssertTrue(error.localizedDescription.contains("bounded regular file"))
         }
         let modified = owner.appendingPathComponent("modified.metal")
         try Data("kernel changed".utf8).write(to: modified)
         XCTAssertThrowsError(try GPUBenchmark.readVerifiedShader(at: modified, containedIn: owner)) { error in
-            XCTAssertTrue(error.localizedDescription.contains("empreinte"))
+            XCTAssertTrue(error.localizedDescription.contains("fingerprint"))
         }
         XCTAssertEqual(try Data(contentsOf: outside), Data("outside sentinel".utf8))
     }
